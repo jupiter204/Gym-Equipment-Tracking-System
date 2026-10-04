@@ -10,14 +10,30 @@ const EquipmentList: React.FC = () => {
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   
   // 分頁狀態
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const [totalCount, setTotalCount] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const reload = () => {
+    setLoading(true);
+    setRefreshKey((k) => k + 1);
+  };
 
   // 訊息反饋狀態 (取代 alert)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // 搜尋字串防抖 (300ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
   // 新增設備用的狀態
   const [showAddModal, setShowAddModal] = useState(false);
@@ -46,39 +62,27 @@ const EquipmentList: React.FC = () => {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 取得真實的 API 資料
-  const fetchEquipments = async (targetPage = page) => {
-    setLoading(true);
-    try {
-      const offset = (targetPage - 1) * pageSize;
-      const res = await apiClient.get<Equipment[]>('/private/equipments', {
-        params: { limit: pageSize, offset },
-      });
-      setEquipments(res.data || []);
-      const countHeader = res.headers['x-total-count'];
-      if (countHeader) {
-        setTotalCount(parseInt(countHeader, 10));
-      }
-    } catch {
-      setMessage({ type: 'error', text: '無法取得設備列表，請確認是否已經登入！' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // 統一資料取得 (支援分頁、伺服器端搜尋 q 與末頁刪除自動回退)
   useEffect(() => {
     let ignore = false;
     const load = async () => {
       try {
         const offset = (page - 1) * pageSize;
-        const res = await apiClient.get<Equipment[]>('/private/equipments', {
-          params: { limit: pageSize, offset },
-        });
+        const params: Record<string, unknown> = { limit: pageSize, offset };
+        if (debouncedSearch.trim()) {
+          params.q = debouncedSearch.trim();
+        }
+        const res = await apiClient.get<Equipment[]>('/private/equipments', { params });
         if (!ignore) {
           setEquipments(res.data || []);
           const countHeader = res.headers['x-total-count'];
           if (countHeader) {
-            setTotalCount(parseInt(countHeader, 10));
+            const total = parseInt(countHeader, 10);
+            setTotalCount(total);
+            const maxPage = Math.max(1, Math.ceil(total / pageSize));
+            if (page > maxPage) {
+              setPage(maxPage);
+            }
           }
         }
       } catch {
@@ -95,7 +99,7 @@ const EquipmentList: React.FC = () => {
     return () => {
       ignore = true;
     };
-  }, [page]);
+  }, [page, debouncedSearch, refreshKey]);
 
   // 處理新增表單變更
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -141,8 +145,12 @@ const EquipmentList: React.FC = () => {
       setShowAddModal(false);
       setFormData({ asset_code: '', name: '', category: '', location: '', maint_interval: 30 });
       setMessage({ type: 'success', text: '設備新增成功！' });
-      fetchEquipments(1);
-      setPage(1);
+      if (page === 1) {
+        reload();
+      } else {
+        setLoading(true);
+        setPage(1);
+      }
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setMessage({ type: 'error', text: err.response?.data?.error || '新增失敗，請確認編號是否重複或格式錯誤！' });
@@ -173,7 +181,7 @@ const EquipmentList: React.FC = () => {
       });
       setShowEditModal(false);
       setMessage({ type: 'success', text: '設備資料修改成功！' });
-      fetchEquipments(page);
+      reload();
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setMessage({ type: 'error', text: err.response?.data?.error || '修改失敗，請確認資料是否正確！' });
@@ -191,7 +199,7 @@ const EquipmentList: React.FC = () => {
     try {
       const res = await apiClient.delete('/private/equipment', { data: { lid } });
       setMessage({ type: 'success', text: res.data?.message || '設備已成功處理！' });
-      fetchEquipments(page);
+      reload();
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setMessage({ type: 'error', text: err.response?.data?.error || '操作失敗！' });
@@ -220,13 +228,6 @@ const EquipmentList: React.FC = () => {
       return <span className="px-2 py-1 bg-secondary text-secondary-foreground rounded-full text-xs whitespace-nowrap">未知狀態</span>;
     }
   };
-
-  const filteredEquipments = equipments.filter(
-    (eq) =>
-      eq.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      eq.asset_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (eq.location && eq.location.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
 
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 
@@ -265,7 +266,7 @@ const EquipmentList: React.FC = () => {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input 
             type="text" 
-            placeholder="搜尋當前頁面器材名稱、編號或位置..." 
+            placeholder="搜尋器材名稱、編號或位置..." 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-card border border-border rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary text-foreground"
@@ -277,12 +278,12 @@ const EquipmentList: React.FC = () => {
         <div className="text-muted-foreground p-8 text-center">正在讀取器材資料，請稍候...</div>
       ) : (
         <div className="grid gap-4">
-          {filteredEquipments.length === 0 ? (
+          {equipments.length === 0 ? (
             <div className="text-center p-8 text-muted-foreground border rounded-lg border-dashed">
               {searchTerm ? '找不到符合搜尋條件的器材。' : '目前還沒有任何設備資料。'}
             </div>
           ) : (
-            filteredEquipments.map((eq) => (
+            equipments.map((eq) => (
               <Card key={eq.lid}>
                 <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div className="flex-1 space-y-2">

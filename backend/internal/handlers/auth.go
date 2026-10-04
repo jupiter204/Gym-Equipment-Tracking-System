@@ -16,6 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -36,7 +37,11 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *Handler) generateTokens(ctx context.Context, userUUID string, role string) (string, string, error) {
+type dbExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+func (h *Handler) generateTokensWithDB(ctx context.Context, db dbExecutor, userUUID string, role string) (string, string, error) {
 	jwtKey := middleware.GetJWTKey()
 	now := time.Now()
 
@@ -72,7 +77,7 @@ func (h *Handler) generateTokens(ctx context.Context, userUUID string, role stri
 
 	// Persist refresh token family record for revocation tracking
 	tokenHashStr := hashToken(refreshTokenString)
-	if _, err := h.DB.Exec(ctx, `
+	if _, err := db.Exec(ctx, `
 		INSERT INTO refresh_tokens (jti, user_id, token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)
 	`, refreshJTI, userUUID, tokenHashStr, refreshExp); err != nil {
@@ -81,6 +86,10 @@ func (h *Handler) generateTokens(ctx context.Context, userUUID string, role stri
 	}
 
 	return accessTokenString, refreshTokenString, nil
+}
+
+func (h *Handler) generateTokens(ctx context.Context, userUUID string, role string) (string, string, error) {
+	return h.generateTokensWithDB(ctx, h.DB, userUUID, role)
 }
 
 const refreshGracePeriod = 10 * time.Second
@@ -194,8 +203,17 @@ func (h *Handler) RefreshTokenHandler(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+	tx, err := h.DB.Begin(ctx)
+	if err != nil {
+		slog.Error("Failed to begin transaction for token refresh", "err", err)
+		respondError(c, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+	defer tx.Rollback(ctx)
+
 	// 原子性更新：僅當該 JTI 尚未撤銷且未過期時，設為 revoked_at = NOW()
-	res, err := h.DB.Exec(c.Request.Context(), `
+	res, err := tx.Exec(ctx, `
 		UPDATE refresh_tokens
 		   SET revoked_at = NOW()
 		 WHERE jti = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > NOW()
@@ -207,10 +225,11 @@ func (h *Handler) RefreshTokenHandler(c *gin.Context) {
 	}
 
 	if res.RowsAffected() == 0 {
+		_ = tx.Rollback(ctx)
 		// 查明為何無法更新 (失敗關閉安全原則)
 		var expiresAt time.Time
 		var revokedAt *time.Time
-		err := h.DB.QueryRow(c.Request.Context(), `
+		err := h.DB.QueryRow(ctx, `
 			SELECT expires_at, revoked_at FROM refresh_tokens WHERE jti = $1 AND user_id = $2
 		`, jti, userUUID).Scan(&expiresAt, &revokedAt)
 
@@ -233,7 +252,7 @@ func (h *Handler) RefreshTokenHandler(c *gin.Context) {
 			}
 			// 超過寬限期：觸發 Token Reuse 警示，撤銷該使用者所有未撤銷之 Token
 			slog.Warn("Token reuse detected, revoking all active refresh tokens for user", "user_id", userUUID)
-			_, _ = h.DB.Exec(c.Request.Context(), `
+			_, _ = h.DB.Exec(ctx, `
 				UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL
 			`, userUUID)
 			respondError(c, http.StatusUnauthorized, "Refresh token has been revoked")
@@ -245,7 +264,7 @@ func (h *Handler) RefreshTokenHandler(c *gin.Context) {
 	}
 
 	var role string
-	err = h.DB.QueryRow(c.Request.Context(), "SELECT role FROM users WHERE lid = $1", userUUID).Scan(&role)
+	err = tx.QueryRow(ctx, "SELECT role FROM users WHERE lid = $1", userUUID).Scan(&role)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -257,10 +276,16 @@ func (h *Handler) RefreshTokenHandler(c *gin.Context) {
 		return
 	}
 
-	newAccessToken, newRefreshToken, err := h.generateTokens(c.Request.Context(), userUUID, role)
+	newAccessToken, newRefreshToken, err := h.generateTokensWithDB(ctx, tx, userUUID, role)
 	if err != nil {
 		slog.Error("Token rotation failed", "err", err)
 		respondError(c, http.StatusInternalServerError, "Failed to issue new tokens")
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("Failed to commit token refresh transaction", "err", err)
+		respondError(c, http.StatusInternalServerError, "Failed to commit token rotation")
 		return
 	}
 

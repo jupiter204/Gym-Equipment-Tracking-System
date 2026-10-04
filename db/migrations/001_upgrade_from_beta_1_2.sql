@@ -13,9 +13,14 @@ ALTER TABLE equipments ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ NULL;
 DO $$
 DECLARE
     c_name text;
+    updated_count int;
 BEGIN
     -- Fix any invalid historical maint_interval (< 1)
     UPDATE equipments SET maint_interval = 30 WHERE maint_interval < 1;
+    GET DIAGNOSTICS updated_count = ROW_COUNT;
+    IF updated_count > 0 THEN
+        RAISE NOTICE '已將 % 筆 maint_interval < 1 的設備保養週期調整為預設值 30 天', updated_count;
+    END IF;
 
     -- Drop existing maint_interval check constraints
     FOR c_name IN

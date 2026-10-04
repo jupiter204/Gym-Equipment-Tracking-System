@@ -19,6 +19,13 @@ func InitDB() *pgxpool.Pool {
 	dbPort := os.Getenv("DB_PORT")
 	sslMode := os.Getenv("DB_SSLMODE")
 
+	if os.Getenv("APP_ENV") == "production" {
+		if dbPass == "" || dbPass == "postgres" || len(dbPass) < 8 {
+			slog.Error("生產環境護欄阻擋：DB_PASSWORD 不得為空、預設值 (postgres) 或少於 8 字元")
+			os.Exit(1)
+		}
+	}
+
 	if dbHost == "" {
 		dbHost = "db"
 	}

@@ -220,12 +220,6 @@ func main() {
 
 // bootstrapAdmin 於系統尚無任何使用者時，依環境變數建立初始管理員
 func bootstrapAdmin(dbPool *pgxpool.Pool) {
-	username := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_USERNAME"))
-	password := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
-	if username == "" || password == "" {
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -235,31 +229,40 @@ func bootstrapAdmin(dbPool *pgxpool.Pool) {
 		return
 	}
 
-	if userCount == 0 {
-		if len(username) < 3 || len(username) > 32 {
-			slog.Error("初始管理員帳號長度無效 (須為 3-32 字元)")
-			return
-		}
-		if len([]byte(password)) < 6 || len([]byte(password)) > 72 {
-			slog.Error("初始管理員密碼長度無效 (須為 6-72 位元組)")
-			return
-		}
+	if userCount > 0 {
+		return
+	}
 
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		if err != nil {
-			slog.Error("初始管理員密碼雜湊失敗", "err", err)
-			return
-		}
+	username := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_USERNAME"))
+	password := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
+	if username == "" || password == "" {
+		slog.Warn("系統目前沒有任何使用者；請設定 BOOTSTRAP_ADMIN_USERNAME 與 BOOTSTRAP_ADMIN_PASSWORD 後重啟")
+		return
+	}
 
-		_, err = dbPool.Exec(ctx, `
-			INSERT INTO users (username, password_hash, name, role)
-			VALUES ($1, $2, $3, 'admin')
-			ON CONFLICT (username) DO NOTHING
-		`, username, string(hash), "系統管理員")
-		if err != nil {
-			slog.Error("建立初始管理員失敗", "err", err)
-		} else {
-			slog.Info("已成功建立初始管理員帳號", "username", username)
-		}
+	if len(username) < 3 || len(username) > 32 {
+		slog.Error("初始管理員帳號長度無效 (須為 3-32 字元)")
+		return
+	}
+	if len(password) < 8 || len([]byte(password)) > 72 {
+		slog.Error("初始管理員密碼長度無效 (須為 8-72 位元組)")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		slog.Error("初始管理員密碼雜湊失敗", "err", err)
+		return
+	}
+
+	_, err = dbPool.Exec(ctx, `
+		INSERT INTO users (username, password_hash, name, role)
+		VALUES ($1, $2, $3, 'admin')
+		ON CONFLICT (username) DO NOTHING
+	`, username, string(hash), "系統管理員")
+	if err != nil {
+		slog.Error("建立初始管理員失敗", "err", err)
+	} else {
+		slog.Info("已成功建立初始管理員帳號", "username", username)
 	}
 }

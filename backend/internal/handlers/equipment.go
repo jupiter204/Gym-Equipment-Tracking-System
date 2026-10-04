@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"backend/internal/models"
@@ -68,42 +69,78 @@ func (h *Handler) GetEquipment(c *gin.Context) {
 
 // GetDetailEquipment godoc
 // @Summary      獲取所有設備詳情
-// @Description  回傳資料庫中未下架設備的完整資訊，支援分頁 (僅限管理員與維修人員)
+// @Description  回傳資料庫中未下架設備的完整資訊，支援分頁與關鍵字搜尋 (僅限管理員與維修人員)
 // @Tags         private
 // @Accept       json
 // @Produce      json
-// @Param        limit   query     int  false "每頁筆數 (預設 50，最大 100)"
-// @Param        offset  query     int  false "偏移量 (預設 0)"
+// @Param        limit   query     int     false "每頁筆數 (預設 50，最大 100)"
+// @Param        offset  query     int     false "偏移量 (預設 0)"
+// @Param        q       query     string  false "關鍵字搜尋 (名稱、資產編號、位置，最大 50 字元)"
 // @Success      200  {array}   models.EquipmentDetail
 // @Header       200  {integer} X-Total-Count "符合條件的總筆數"
+// @Failure      400  {object}  models.ErrorResponse "參數錯誤"
 // @Failure      500  {object}  models.ErrorResponse "伺服器內部錯誤"
 // @Security     BearerAuth
 // @Router       /api/private/equipments [get]
 func (h *Handler) GetDetailEquipment(c *gin.Context) {
 	limit, offset := parsePagination(c)
-
-	var totalCount int
-	if err := h.DB.QueryRow(c.Request.Context(), "SELECT COUNT(*) FROM equipments WHERE retired_at IS NULL").Scan(&totalCount); err != nil {
-		slog.Error("Count equipments failed", "err", err)
-		respondError(c, http.StatusInternalServerError, "Query failed")
+	q := strings.TrimSpace(c.Query("q"))
+	if len(q) > 50 {
+		respondError(c, http.StatusBadRequest, "Search query too long (max 50 chars)")
 		return
 	}
-	c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
 
-	query := `
-		SELECT lid, asset_code, name, category, last_maint_date, maint_interval, status, location
-		FROM equipments
-		WHERE retired_at IS NULL
-		ORDER BY created_at DESC, lid
-		LIMIT $1 OFFSET $2`
+	ctx := c.Request.Context()
+	var totalCount int
+	var rows pgx.Rows
+	var err error
 
-	rows, err := h.DB.Query(c.Request.Context(), query, limit, offset)
+	if q != "" {
+		escaped := "%" + escapeLikePattern(q) + "%"
+		countQuery := `
+			SELECT COUNT(*)
+			FROM equipments
+			WHERE retired_at IS NULL
+			  AND (name ILIKE $1 ESCAPE '\' OR asset_code ILIKE $1 ESCAPE '\' OR location ILIKE $1 ESCAPE '\')`
+		if err := h.DB.QueryRow(ctx, countQuery, escaped).Scan(&totalCount); err != nil {
+			slog.Error("Count equipments failed", "err", err)
+			respondError(c, http.StatusInternalServerError, "Query failed")
+			return
+		}
+
+		dataQuery := `
+			SELECT lid, asset_code, name, category, last_maint_date, maint_interval, status, location
+			FROM equipments
+			WHERE retired_at IS NULL
+			  AND (name ILIKE $1 ESCAPE '\' OR asset_code ILIKE $1 ESCAPE '\' OR location ILIKE $1 ESCAPE '\')
+			ORDER BY created_at DESC, lid
+			LIMIT $2 OFFSET $3`
+		rows, err = h.DB.Query(ctx, dataQuery, escaped, limit, offset)
+	} else {
+		countQuery := "SELECT COUNT(*) FROM equipments WHERE retired_at IS NULL"
+		if err := h.DB.QueryRow(ctx, countQuery).Scan(&totalCount); err != nil {
+			slog.Error("Count equipments failed", "err", err)
+			respondError(c, http.StatusInternalServerError, "Query failed")
+			return
+		}
+
+		dataQuery := `
+			SELECT lid, asset_code, name, category, last_maint_date, maint_interval, status, location
+			FROM equipments
+			WHERE retired_at IS NULL
+			ORDER BY created_at DESC, lid
+			LIMIT $1 OFFSET $2`
+		rows, err = h.DB.Query(ctx, dataQuery, limit, offset)
+	}
+
 	if err != nil {
 		slog.Error("Query equipments failed", "err", err)
 		respondError(c, http.StatusInternalServerError, "Query failed")
 		return
 	}
 	defer rows.Close()
+
+	c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
 
 	list := make([]models.EquipmentDetail, 0)
 	for rows.Next() {
@@ -119,9 +156,11 @@ func (h *Handler) GetDetailEquipment(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "Failed to scan equipment data")
 			return
 		}
-
 		e.LastMaintDate = lastMaint.Format("2006-01-02")
 		list = append(list, e)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("Iterate equipments rows failed", "err", err)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -327,6 +366,17 @@ func (h *Handler) DeleteEquipment(c *gin.Context) {
 	// 若無任何關聯紀錄，則執行實體刪除
 	_, err = h.DB.Exec(c.Request.Context(), "DELETE FROM equipments WHERE lid = $1", req.LID)
 	if err != nil {
+		if isPgErrorCode(err, "23503") {
+			// 競態條件保護：若在查詢與刪除之間建立了維修紀錄，安全降級為軟刪除
+			_, softErr := h.DB.Exec(c.Request.Context(), "UPDATE equipments SET retired_at = NOW() WHERE lid = $1", req.LID)
+			if softErr != nil {
+				slog.Error("Fallback soft delete equipment failed", "err", softErr)
+				respondError(c, http.StatusInternalServerError, "Failed to archive equipment")
+				return
+			}
+			c.JSON(http.StatusOK, models.MessageResponse{Message: "Equipment archived successfully (historical maintenance records preserved)"})
+			return
+		}
 		slog.Error("Hard delete equipment failed", "err", err)
 		respondError(c, http.StatusInternalServerError, "Failed to delete equipment")
 		return
@@ -403,6 +453,9 @@ func (h *Handler) GetStats(c *gin.Context) {
 		}
 		categories = append(categories, cs)
 	}
+	if err := catRows.Err(); err != nil {
+		slog.Error("GetStats catRows iteration error", "err", err)
+	}
 	if len(categories) == 0 {
 		categories = append(categories, models.CategoryStat{Name: "無故障紀錄", Count: 0})
 	}
@@ -413,25 +466,7 @@ func (h *Handler) GetStats(c *gin.Context) {
 		loc = time.Local
 	}
 	now := time.Now().In(loc)
-
-	// 初始化過去 6 個月清單
-	type trendItem struct {
-		name        string
-		monthKey    string
-		faults      int
-		maintenance int
-	}
-	trendMonths := make([]trendItem, 6)
-	for i := 0; i < 6; i++ {
-		// 5 - i 代表從 5 個月前到當月
-		d := now.AddDate(0, -(5 - i), 0)
-		trendMonths[i] = trendItem{
-			name:        fmt.Sprintf("%d月", d.Month()),
-			monthKey:    d.Format("2006-01"),
-			faults:      0,
-			maintenance: 0,
-		}
-	}
+	monthlyTrends := buildTrendMonths(now)
 
 	trendQuery := `
 		SELECT
@@ -457,25 +492,23 @@ func (h *Handler) GetStats(c *gin.Context) {
 	for trendRows.Next() {
 		var mKey string
 		var faults, maintenance int
-		if err := trendRows.Scan(&mKey, &faults, &maintenance); err == nil {
-			trendMap[mKey] = struct {
-				faults      int
-				maintenance int
-			}{faults: faults, maintenance: maintenance}
+		if err := trendRows.Scan(&mKey, &faults, &maintenance); err != nil {
+			slog.Error("GetStats scan trend row failed", "err", err)
+			continue
 		}
+		trendMap[mKey] = struct {
+			faults      int
+			maintenance int
+		}{faults: faults, maintenance: maintenance}
+	}
+	if err := trendRows.Err(); err != nil {
+		slog.Error("GetStats trendRows iteration error", "err", err)
 	}
 
-	monthlyTrends := make([]models.MonthlyTrend, 6)
-	for i, tm := range trendMonths {
-		if val, exists := trendMap[tm.monthKey]; exists {
-			tm.faults = val.faults
-			tm.maintenance = val.maintenance
-		}
-		monthlyTrends[i] = models.MonthlyTrend{
-			Name:        tm.name,
-			MonthKey:    tm.monthKey,
-			Faults:      tm.faults,
-			Maintenance: tm.maintenance,
+	for i := range monthlyTrends {
+		if val, exists := trendMap[monthlyTrends[i].MonthKey]; exists {
+			monthlyTrends[i].Faults = val.faults
+			monthlyTrends[i].Maintenance = val.maintenance
 		}
 	}
 
@@ -486,3 +519,33 @@ func (h *Handler) GetStats(c *gin.Context) {
 	})
 }
 
+// buildTrendMonths constructs the 6-month trend template based on the 1st of the month
+func buildTrendMonths(now time.Time) []models.MonthlyTrend {
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	result := make([]models.MonthlyTrend, 6)
+	for i := 0; i < 6; i++ {
+		d := first.AddDate(0, -(5 - i), 0)
+		result[i] = models.MonthlyTrend{
+			Name:        fmt.Sprintf("%d月", d.Month()),
+			MonthKey:    d.Format("2006-01"),
+			Faults:      0,
+			Maintenance: 0,
+		}
+	}
+	return result
+}
+
+// escapeLikePattern escapes %, _, and \ for PostgreSQL ILIKE queries
+func escapeLikePattern(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '%', '_', '\\':
+			b.WriteRune('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}

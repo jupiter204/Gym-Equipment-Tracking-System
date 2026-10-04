@@ -19,4 +19,4 @@ VALUES
     ('ELL-001', '全功能交叉橢圓機 E-300', '有氧器材', CURRENT_DATE - INTERVAL '5 days', 60, 'normal', '1F 有氧重訓區 B01'),
     ('BIK-001', '飛輪競速健身車 B-200', '有氧器材', CURRENT_DATE - INTERVAL '15 days', 30, 'normal', '2F 飛輪教室 C01'),
     ('BEN-001', '可調式奧林匹克臥推椅', '重量訓練', CURRENT_DATE - INTERVAL '20 days', 90, 'normal', '1F 重訓自由重量區 D01')
-ON CONFLICT (asset_code) DO NOTHING;
+ON CONFLICT (asset_code) WHERE retired_at IS NULL DO NOTHING;

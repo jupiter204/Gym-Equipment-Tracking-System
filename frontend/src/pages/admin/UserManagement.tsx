@@ -38,32 +38,16 @@ const UserManagement: React.FC = () => {
     password: '',
   });
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // 取得使用者列表
-  const fetchUsers = async (targetPage = page) => {
+  const reload = () => {
     setLoading(true);
-    try {
-      const offset = (targetPage - 1) * pageSize;
-      const res = await apiClient.get<User[]>('/private/users', {
-        params: { limit: pageSize, offset },
-      });
-      setUsers(res.data || []);
-      const countHeader = res.headers['x-total-count'];
-      if (countHeader) {
-        setTotalCount(parseInt(countHeader, 10));
-      }
-    } catch (err: unknown) {
-      if (axios.isAxiosError(err)) {
-        setFeedback({ type: 'error', text: err.response?.data?.error || '無法取得使用者資料，可能沒有權限！' });
-      } else {
-        setFeedback({ type: 'error', text: '無法取得使用者資料' });
-      }
-    } finally {
-      setLoading(false);
-    }
+    setRefreshKey((k) => k + 1);
   };
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 統一資料取得與末頁刪除自動回退
   useEffect(() => {
     let ignore = false;
     const load = async () => {
@@ -76,7 +60,12 @@ const UserManagement: React.FC = () => {
           setUsers(res.data || []);
           const countHeader = res.headers['x-total-count'];
           if (countHeader) {
-            setTotalCount(parseInt(countHeader, 10));
+            const total = parseInt(countHeader, 10);
+            setTotalCount(total);
+            const maxPage = Math.max(1, Math.ceil(total / pageSize));
+            if (page > maxPage) {
+              setPage(maxPage);
+            }
           }
         }
       } catch (err: unknown) {
@@ -97,7 +86,7 @@ const UserManagement: React.FC = () => {
     return () => {
       ignore = true;
     };
-  }, [page, pageSize]);
+  }, [page, refreshKey]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -125,8 +114,12 @@ const UserManagement: React.FC = () => {
       setShowAddModal(false);
       setFormData({ username: '', password: '', name: '', role: 'staff' });
       setFeedback({ type: 'success', text: '帳號新增成功！' });
-      fetchUsers(1);
-      setPage(1);
+      if (page === 1) {
+        reload();
+      } else {
+        setLoading(true);
+        setPage(1);
+      }
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setFeedback({ type: 'error', text: err.response?.data?.error || '新增失敗，請確認帳號是否重複！' });
@@ -171,7 +164,7 @@ const UserManagement: React.FC = () => {
       await apiClient.patch('/private/user', payload);
       setShowEditModal(false);
       setFeedback({ type: 'success', text: '使用者資料修改成功！' });
-      fetchUsers(page);
+      reload();
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setFeedback({ type: 'error', text: err.response?.data?.error || '修改失敗！' });
@@ -188,7 +181,7 @@ const UserManagement: React.FC = () => {
     try {
       await apiClient.delete('/private/user', { data: { lid } });
       setFeedback({ type: 'success', text: '帳號刪除成功！' });
-      fetchUsers(page);
+      reload();
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         setFeedback({ type: 'error', text: err.response?.data?.error || '刪除失敗！' });

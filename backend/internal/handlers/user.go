@@ -348,4 +348,3 @@ func (h *Handler) GetUsers(c *gin.Context) {
 
 	c.JSON(http.StatusOK, users)
 }
-

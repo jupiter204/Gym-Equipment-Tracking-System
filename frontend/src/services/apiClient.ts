@@ -141,10 +141,15 @@ apiClient.interceptors.response.use(
   }
 );
 
-// 強制登出輔助函式
-export function handleForceLogout() {
+// 重置攔截器刷新狀態 (不清除 Token)
+export function resetRefreshState() {
   isRefreshing = false;
   failedQueue = [];
+}
+
+// 強制登出輔助函式
+export function handleForceLogout() {
+  resetRefreshState();
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
   if (apiClient.defaults.headers.common['Authorization']) {

@@ -326,7 +326,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "回傳資料庫中未下架設備的完整資訊，支援分頁 (僅限管理員與維修人員)",
+                "description": "回傳資料庫中未下架設備的完整資訊，支援分頁與關鍵字搜尋 (僅限管理員與維修人員)",
                 "consumes": [
                     "application/json"
                 ],
@@ -349,6 +349,12 @@ const docTemplate = `{
                         "description": "偏移量 (預設 0)",
                         "name": "offset",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "關鍵字搜尋 (名稱、資產編號、位置，最大 50 字元)",
+                        "name": "q",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -365,6 +371,12 @@ const docTemplate = `{
                                 "type": "integer",
                                 "description": "符合條件的總筆數"
                             }
+                        }
+                    },
+                    "400": {
+                        "description": "參數錯誤",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
                     "500": {
@@ -421,6 +433,12 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/models.MaintenanceRecord"
+                            }
+                        },
+                        "headers": {
+                            "X-Total-Count": {
+                                "type": "integer",
+                                "description": "符合條件的總筆數"
                             }
                         }
                     },

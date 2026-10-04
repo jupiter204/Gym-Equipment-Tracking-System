@@ -5,7 +5,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- Equipments Table
 CREATE TABLE IF NOT EXISTS equipments (
     lid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    asset_code VARCHAR(50) UNIQUE NOT NULL,
+    asset_code VARCHAR(50) NOT NULL,
     name VARCHAR(100) NOT NULL,
     category VARCHAR(50),
     last_maint_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS equipments (
     retired_at TIMESTAMPTZ NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Partial Unique Index: only active (non-retired) equipments must have unique asset_code
+CREATE UNIQUE INDEX IF NOT EXISTS uq_equipments_asset_code_active
+ON equipments (asset_code)
+WHERE retired_at IS NULL;
 
 -- Maintenance Records Table
 CREATE TABLE IF NOT EXISTS maintenance_records (

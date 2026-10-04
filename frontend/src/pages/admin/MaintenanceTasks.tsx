@@ -15,29 +15,17 @@ const MaintenanceTasks: React.FC = () => {
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const [totalCount, setTotalCount] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const reload = () => {
+    setLoading(true);
+    setRefreshKey((k) => k + 1);
+  };
 
   // 反饋訊息狀態 (取代 alert)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const fetchTasks = async (targetPage = page) => {
-    setLoading(true);
-    try {
-      const offset = (targetPage - 1) * pageSize;
-      const res = await apiClient.get<MaintenanceRecord[]>('/private/maintenance-records', {
-        params: { resolved: 'false', limit: pageSize, offset },
-      });
-      setTasks(res.data || []);
-      const countHeader = res.headers['x-total-count'];
-      if (countHeader) {
-        setTotalCount(parseInt(countHeader, 10));
-      }
-    } catch {
-      setMessage({ type: 'error', text: '載入任務清單失敗，請稍後重試。' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // 統一資料取得與末頁刪除自動回退
   useEffect(() => {
     let ignore = false;
     const load = async () => {
@@ -50,7 +38,12 @@ const MaintenanceTasks: React.FC = () => {
           setTasks(res.data || []);
           const countHeader = res.headers['x-total-count'];
           if (countHeader) {
-            setTotalCount(parseInt(countHeader, 10));
+            const total = parseInt(countHeader, 10);
+            setTotalCount(total);
+            const maxPage = Math.max(1, Math.ceil(total / pageSize));
+            if (page > maxPage) {
+              setPage(maxPage);
+            }
           }
         }
       } catch {
@@ -67,7 +60,7 @@ const MaintenanceTasks: React.FC = () => {
     return () => {
       ignore = true;
     };
-  }, [page]);
+  }, [page, refreshKey]);
 
   const handleResolve = async (lid: string) => {
     setResolvingId(lid);
@@ -77,12 +70,12 @@ const MaintenanceTasks: React.FC = () => {
         resolve_note: '已完成修復與例行檢驗',
       });
       setMessage({ type: 'success', text: '已成功標記該任務為完成修復！' });
-      fetchTasks(page);
+      reload();
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
         if (error.response?.status === 409) {
           setMessage({ type: 'error', text: '該任務已完成解決，畫面將自動更新。' });
-          fetchTasks(page);
+          reload();
         } else {
           setMessage({ type: 'error', text: error.response?.data?.error || '標記失敗，請稍後再試！' });
         }

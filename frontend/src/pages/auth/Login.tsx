@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { Button } from '../../components/ui/Button';
 import { Activity, AlertCircle, Loader2 } from 'lucide-react';
-import apiClient, { handleForceLogout } from '../../services/apiClient';
+import apiClient, { resetRefreshState } from '../../services/apiClient';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
@@ -19,8 +19,11 @@ const Login: React.FC = () => {
   const isExpired = queryParams.get('expired') === 'true';
 
   useEffect(() => {
-    handleForceLogout();
-  }, []);
+    resetRefreshState();
+    if (localStorage.getItem('access_token')) {
+      navigate('/admin', { replace: true });
+    }
+  }, [navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

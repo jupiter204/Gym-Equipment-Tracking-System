@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import apiClient from '../../services/apiClient';
+import { csvCell } from '../../lib/csv';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Download, Loader2, AlertCircle } from 'lucide-react';
@@ -72,16 +73,16 @@ const Analytics: React.FC = () => {
       const headers = ['通報單號', '設備名稱', '資產編號', '回報者類型', '問題描述', '處理狀態', '處理備註', '通報時間'];
       
       const csvContent = [
-        headers.join(','),
+        headers.map((h) => csvCell(h)).join(','),
         ...allRecords.map((r) => [
-          r.lid,
-          `"${(r.equipment_name || '').replace(/"/g, '""')}"`,
-          `"${(r.asset_code || '').replace(/"/g, '""')}"`,
-          r.reporter_type === 'public' ? '民眾' : r.reporter_type === 'system' ? '系統' : '員工',
-          `"${(r.description || '').replace(/"/g, '""')}"`,
-          r.is_resolved ? '已解決' : '未解決',
-          `"${(r.resolve_note || '').replace(/"/g, '""')}"`,
-          new Date(r.created_at).toLocaleString(),
+          csvCell(r.lid),
+          csvCell(r.equipment_name || ''),
+          csvCell(r.asset_code || ''),
+          csvCell(r.reporter_type === 'public' ? '民眾' : r.reporter_type === 'system' ? '系統' : '員工'),
+          csvCell(r.description || ''),
+          csvCell(r.is_resolved ? '已解決' : '未解決'),
+          csvCell(r.resolve_note || ''),
+          csvCell(new Date(r.created_at).toLocaleString()),
         ].join(',')),
       ].join('\n');
 

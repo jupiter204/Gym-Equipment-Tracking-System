@@ -119,6 +119,7 @@ func (h *Handler) PostMaintenanceRecord(c *gin.Context) {
 // @Param        limit     query     int     false  "每頁筆數 (預設 50，最大 100)"
 // @Param        offset    query     int     false  "偏移量 (預設 0)"
 // @Success      200  {array}   models.MaintenanceRecord
+// @Header       200  {integer} X-Total-Count "符合條件的總筆數"
 // @Failure      400  {object}  models.ErrorResponse "查詢參數錯誤"
 // @Failure      500  {object}  models.ErrorResponse "伺服器內部錯誤"
 // @Security     BearerAuth
