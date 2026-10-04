@@ -3,7 +3,7 @@ import axios from 'axios';
 import apiClient from '../../services/apiClient';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
-import { Plus, Search, MapPin, Tag, X } from 'lucide-react';
+import { Plus, Search, MapPin, Tag, X, ChevronLeft, ChevronRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { Equipment } from '../../types';
 
 const EquipmentList: React.FC = () => {
@@ -11,6 +11,14 @@ const EquipmentList: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   
+  // 分頁狀態
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const [totalCount, setTotalCount] = useState(0);
+
+  // 訊息反饋狀態 (取代 alert)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   // 新增設備用的狀態
   const [showAddModal, setShowAddModal] = useState(false);
   const [formData, setFormData] = useState({
@@ -39,20 +47,55 @@ const EquipmentList: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 取得真實的 API 資料
-  const fetchEquipments = async () => {
+  const fetchEquipments = async (targetPage = page) => {
+    setLoading(true);
     try {
-      const res = await apiClient.get('/private/equipments');
+      const offset = (targetPage - 1) * pageSize;
+      const res = await apiClient.get<Equipment[]>('/private/equipments', {
+        params: { limit: pageSize, offset },
+      });
       setEquipments(res.data || []);
+      const countHeader = res.headers['x-total-count'];
+      if (countHeader) {
+        setTotalCount(parseInt(countHeader, 10));
+      }
     } catch {
-      alert('無法取得設備列表，請確認是否已經登入！');
+      setMessage({ type: 'error', text: '無法取得設備列表，請確認是否已經登入！' });
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchEquipments();
-  }, []);
+    let ignore = false;
+    const load = async () => {
+      try {
+        const offset = (page - 1) * pageSize;
+        const res = await apiClient.get<Equipment[]>('/private/equipments', {
+          params: { limit: pageSize, offset },
+        });
+        if (!ignore) {
+          setEquipments(res.data || []);
+          const countHeader = res.headers['x-total-count'];
+          if (countHeader) {
+            setTotalCount(parseInt(countHeader, 10));
+          }
+        }
+      } catch {
+        if (!ignore) {
+          setMessage({ type: 'error', text: '無法取得設備列表，請確認是否已經登入！' });
+        }
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
+      }
+    };
+    void load();
+    return () => {
+      ignore = true;
+    };
+  }, [page]);
 
   // 處理新增表單變更
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -83,7 +126,7 @@ const EquipmentList: React.FC = () => {
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (formData.maint_interval < 1) {
-      alert('保養週期必須至少為 1 天！');
+      setMessage({ type: 'error', text: '保養週期必須至少為 1 天！' });
       return;
     }
     setIsSubmitting(true);
@@ -97,12 +140,14 @@ const EquipmentList: React.FC = () => {
       });
       setShowAddModal(false);
       setFormData({ asset_code: '', name: '', category: '', location: '', maint_interval: 30 });
-      fetchEquipments();
+      setMessage({ type: 'success', text: '設備新增成功！' });
+      fetchEquipments(1);
+      setPage(1);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
-        alert(err.response?.data?.error || '新增失敗，請確認編號是否重複或格式錯誤！');
+        setMessage({ type: 'error', text: err.response?.data?.error || '新增失敗，請確認編號是否重複或格式錯誤！' });
       } else {
-        alert('新增失敗！');
+        setMessage({ type: 'error', text: '新增失敗！' });
       }
     } finally {
       setIsSubmitting(false);
@@ -113,7 +158,7 @@ const EquipmentList: React.FC = () => {
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editFormData.maint_interval < 1) {
-      alert('保養週期必須至少為 1 天！');
+      setMessage({ type: 'error', text: '保養週期必須至少為 1 天！' });
       return;
     }
     setIsSubmitting(true);
@@ -127,29 +172,31 @@ const EquipmentList: React.FC = () => {
         maint_interval: Number(editFormData.maint_interval),
       });
       setShowEditModal(false);
-      fetchEquipments();
+      setMessage({ type: 'success', text: '設備資料修改成功！' });
+      fetchEquipments(page);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
-        alert(err.response?.data?.error || '修改失敗，請確認資料是否正確！');
+        setMessage({ type: 'error', text: err.response?.data?.error || '修改失敗，請確認資料是否正確！' });
       } else {
-        alert('修改失敗！');
+        setMessage({ type: 'error', text: '修改失敗！' });
       }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // 刪除設備
+  // 下架/刪除設備
   const handleDelete = async (lid: string) => {
-    if (!window.confirm('確定要刪除這個設備嗎？（若該設備已有維修紀錄，將因審計保存原則而無法直接刪除）')) return;
+    if (!window.confirm('確定要下架此設備嗎？（若該設備已有維修紀錄，將進行下架封存以保留歷史稽核紀錄；若無紀錄則直接刪除）')) return;
     try {
-      await apiClient.delete('/private/equipment', { data: { lid } });
-      fetchEquipments();
+      const res = await apiClient.delete('/private/equipment', { data: { lid } });
+      setMessage({ type: 'success', text: res.data?.message || '設備已成功處理！' });
+      fetchEquipments(page);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
-        alert(err.response?.data?.error || '刪除失敗！');
+        setMessage({ type: 'error', text: err.response?.data?.error || '操作失敗！' });
       } else {
-        alert('刪除失敗！');
+        setMessage({ type: 'error', text: '操作失敗！' });
       }
     }
   };
@@ -181,26 +228,44 @@ const EquipmentList: React.FC = () => {
       (eq.location && eq.location.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
-  if (loading) return <div className="text-muted-foreground p-8">正在讀取器材資料，請稍候...</div>;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 
   return (
     <div className="space-y-6 relative">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">器材管理列表</h1>
-          <p className="text-muted-foreground mt-2">在這裡檢視所有健身器材的狀態與位置</p>
+          <p className="text-muted-foreground mt-2">檢視所有健身器材的狀態、位置與保養週期 (共 {totalCount} 台)</p>
         </div>
         <Button className="flex items-center gap-2" onClick={() => setShowAddModal(true)}>
           <Plus className="w-4 h-4" /> 新增器材
         </Button>
       </div>
 
+      {message && (
+        <div
+          className={`p-4 rounded-md flex items-center justify-between border ${
+            message.type === 'success'
+              ? 'bg-green-500/10 border-green-500/30 text-green-500'
+              : 'bg-destructive/10 border-destructive/30 text-destructive'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {message.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+            <span>{message.text}</span>
+          </div>
+          <button onClick={() => setMessage(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-4 items-center">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input 
             type="text" 
-            placeholder="搜尋器材名稱、編號或位置..." 
+            placeholder="搜尋當前頁面器材名稱、編號或位置..." 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-card border border-border rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary text-foreground"
@@ -208,48 +273,79 @@ const EquipmentList: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid gap-4">
-        {filteredEquipments.length === 0 ? (
-          <div className="text-center p-8 text-muted-foreground border rounded-lg border-dashed">
-            {searchTerm ? '找不到符合搜尋條件的器材。' : '目前還沒有任何設備資料。'}
+      {loading ? (
+        <div className="text-muted-foreground p-8 text-center">正在讀取器材資料，請稍候...</div>
+      ) : (
+        <div className="grid gap-4">
+          {filteredEquipments.length === 0 ? (
+            <div className="text-center p-8 text-muted-foreground border rounded-lg border-dashed">
+              {searchTerm ? '找不到符合搜尋條件的器材。' : '目前還沒有任何設備資料。'}
+            </div>
+          ) : (
+            filteredEquipments.map((eq) => (
+              <Card key={eq.lid}>
+                <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold text-lg">{eq.name}</span>
+                      {getStatusBadge(eq.status)}
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-1">
+                        <Tag className="w-3 h-3" /> 編號: {eq.asset_code}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <MapPin className="w-3 h-3" /> 位置: {eq.location || '未指定'}
+                      </div>
+                      <div>分類: {eq.category || '未分類'}</div>
+                      <div>保養間隔: {eq.maint_interval} 天</div>
+                      <div>上次保養: {eq.last_maint_date || '無紀錄'}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 mt-2 sm:mt-0">
+                    <Button variant="outline" size="sm" onClick={() => handleEditClick(eq)}>
+                      編輯資料
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => handleQrClick(eq)}>
+                      QR Code
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={() => handleDelete(eq.lid)}>
+                      下架
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* 分頁控制列 */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between pt-4 border-t border-border">
+          <p className="text-sm text-muted-foreground">
+            第 {page} 頁 / 共 {totalPages} 頁 (每頁 {pageSize} 筆，總計 {totalCount} 筆)
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1 || loading}
+            >
+              <ChevronLeft className="w-4 h-4 mr-1" /> 上一頁
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || loading}
+            >
+              下一頁 <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
           </div>
-        ) : (
-          filteredEquipments.map((eq) => (
-            <Card key={eq.lid}>
-              <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="flex-1 space-y-2">
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold text-lg">{eq.name}</span>
-                    {getStatusBadge(eq.status)}
-                  </div>
-                  <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-1">
-                      <Tag className="w-3 h-3" /> 編號: {eq.asset_code}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <MapPin className="w-3 h-3" /> 位置: {eq.location || '未指定'}
-                    </div>
-                    <div>分類: {eq.category || '未分類'}</div>
-                    <div>保養間隔: {eq.maint_interval} 天</div>
-                    <div>上次保養: {eq.last_maint_date || '無紀錄'}</div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 mt-2 sm:mt-0">
-                  <Button variant="outline" size="sm" onClick={() => handleEditClick(eq)}>
-                    編輯資料
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={() => handleQrClick(eq)}>
-                    QR Code
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => handleDelete(eq.lid)}>
-                    刪除
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))
-        )}
-      </div>
+        </div>
+      )}
 
       {/* 新增設備的彈出視窗 */}
       {showAddModal && (

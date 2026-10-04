@@ -31,3 +31,31 @@ export interface MaintenanceRecord {
   resolve_note?: string;
   created_at: string;
 }
+
+export interface EquipmentSummary {
+  total: number;
+  normal: number;
+  faulty: number;
+  pending: number;
+  repairing: number;
+  faultRate: number;
+}
+
+export interface CategoryStat {
+  name: string;
+  count: number;
+}
+
+export interface MonthlyTrend {
+  name: string;
+  monthKey: string;
+  faults: number;
+  maintenance: number;
+}
+
+export interface StatsResponse {
+  equipment_summary: EquipmentSummary;
+  category_stats: CategoryStat[];
+  monthly_trends: MonthlyTrend[];
+}
+

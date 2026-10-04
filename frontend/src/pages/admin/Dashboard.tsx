@@ -1,37 +1,64 @@
 import React, { useEffect, useState } from 'react';
 import apiClient from '../../services/apiClient';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
-import { Activity, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { Button } from '../../components/ui/Button';
+import { Activity, AlertTriangle, CheckCircle, Clock, AlertCircle } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend } from 'recharts';
-import type { Equipment } from '../../types';
+import type { StatsResponse, EquipmentSummary } from '../../types';
 
 const Dashboard: React.FC = () => {
-  const [stats, setStats] = useState({ total: 0, faulty: 0, pending: 0, repairing: 0, faultRate: 0 });
+  const [stats, setStats] = useState<EquipmentSummary>({
+    total: 0,
+    normal: 0,
+    faulty: 0,
+    pending: 0,
+    repairing: 0,
+    faultRate: 0,
+  });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchStats = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiClient.get<StatsResponse>('/private/stats');
+      if (res.data?.equipment_summary) {
+        setStats(res.data.equipment_summary);
+      }
+    } catch {
+      setError('無法載入系統統計數據，請檢查網路連線或稍後再試。');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchStats = async () => {
+    let ignore = false;
+    const load = async () => {
       try {
-        const res = await apiClient.get('/private/equipments');
-        const equipments: Equipment[] = res.data || [];
-        const total = equipments.length;
-        const faulty = equipments.filter((eq) => eq.status === 'faulty').length;
-        const pending = equipments.filter((eq) => eq.status === 'pending_maint').length;
-        const repairing = equipments.filter((eq) => eq.status === 'repairing').length;
-        const faultRate = total > 0 ? Math.round(((faulty + repairing) / total) * 100) : 0;
-        
-        setStats({ total, faulty, pending, repairing, faultRate });
+        const res = await apiClient.get<StatsResponse>('/private/stats');
+        if (!ignore && res.data?.equipment_summary) {
+          setStats(res.data.equipment_summary);
+        }
       } catch {
-        // Silently handled
+        if (!ignore) {
+          setError('無法載入系統統計數據，請檢查網路連線或稍後再試。');
+        }
       } finally {
-        setLoading(false);
+        if (!ignore) {
+          setLoading(false);
+        }
       }
     };
-    fetchStats();
+    void load();
+    return () => {
+      ignore = true;
+    };
   }, []);
 
-  const normalCount = Math.max(0, stats.total - stats.faulty - stats.pending - stats.repairing);
-  
+  const normalCount = stats.normal;
+
   const chartData = [
     { name: '正常運作', value: normalCount, color: '#22c55e' },
     { name: '待保養', value: stats.pending, color: '#f59e0b' },
@@ -41,6 +68,19 @@ const Dashboard: React.FC = () => {
 
   if (loading) {
     return <div className="p-8 text-muted-foreground">正在載入數據中...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="p-8 max-w-lg mx-auto mt-12 bg-destructive/10 border border-destructive/20 rounded-lg text-center space-y-4">
+        <AlertCircle className="w-10 h-10 text-destructive mx-auto" />
+        <h2 className="text-lg font-semibold text-destructive">載入失敗</h2>
+        <p className="text-sm text-muted-foreground">{error}</p>
+        <Button onClick={fetchStats} variant="outline">
+          重新整理
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -60,7 +100,7 @@ const Dashboard: React.FC = () => {
             <div className="text-2xl font-bold">{stats.total}</div>
           </CardContent>
         </Card>
-        
+
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">正常運作</CardTitle>
@@ -120,7 +160,7 @@ const Dashboard: React.FC = () => {
                       <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
-                  <RechartsTooltip 
+                  <RechartsTooltip
                     contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', color: '#fafafa' }}
                     itemStyle={{ color: '#fafafa' }}
                   />

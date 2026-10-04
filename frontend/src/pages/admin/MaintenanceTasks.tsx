@@ -3,7 +3,7 @@ import axios from 'axios';
 import apiClient from '../../services/apiClient';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
-import { Wrench, Check, AlertTriangle, Clock } from 'lucide-react';
+import { Wrench, Check, AlertTriangle, Clock, ChevronLeft, ChevronRight, X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { MaintenanceRecord } from '../../types';
 
 const MaintenanceTasks: React.FC = () => {
@@ -11,21 +11,63 @@ const MaintenanceTasks: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
-  const fetchTasks = async () => {
+  // 分頁狀態
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const [totalCount, setTotalCount] = useState(0);
+
+  // 反饋訊息狀態 (取代 alert)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const fetchTasks = async (targetPage = page) => {
     setLoading(true);
     try {
-      const res = await apiClient.get('/private/maintenance-records?resolved=false');
+      const offset = (targetPage - 1) * pageSize;
+      const res = await apiClient.get<MaintenanceRecord[]>('/private/maintenance-records', {
+        params: { resolved: 'false', limit: pageSize, offset },
+      });
       setTasks(res.data || []);
+      const countHeader = res.headers['x-total-count'];
+      if (countHeader) {
+        setTotalCount(parseInt(countHeader, 10));
+      }
     } catch {
-      // Handled silently or empty state
+      setMessage({ type: 'error', text: '載入任務清單失敗，請稍後重試。' });
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchTasks();
-  }, []);
+    let ignore = false;
+    const load = async () => {
+      try {
+        const offset = (page - 1) * pageSize;
+        const res = await apiClient.get<MaintenanceRecord[]>('/private/maintenance-records', {
+          params: { resolved: 'false', limit: pageSize, offset },
+        });
+        if (!ignore) {
+          setTasks(res.data || []);
+          const countHeader = res.headers['x-total-count'];
+          if (countHeader) {
+            setTotalCount(parseInt(countHeader, 10));
+          }
+        }
+      } catch {
+        if (!ignore) {
+          setMessage({ type: 'error', text: '載入任務清單失敗，請稍後重試。' });
+        }
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
+      }
+    };
+    void load();
+    return () => {
+      ignore = true;
+    };
+  }, [page]);
 
   const handleResolve = async (lid: string) => {
     setResolvingId(lid);
@@ -34,35 +76,56 @@ const MaintenanceTasks: React.FC = () => {
         lid,
         resolve_note: '已完成修復與例行檢驗',
       });
-      fetchTasks();
+      setMessage({ type: 'success', text: '已成功標記該任務為完成修復！' });
+      fetchTasks(page);
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
         if (error.response?.status === 409) {
-          alert('該任務已完成解決，畫面將自動更新。');
-          fetchTasks();
+          setMessage({ type: 'error', text: '該任務已完成解決，畫面將自動更新。' });
+          fetchTasks(page);
         } else {
-          alert(error.response?.data?.error || '標記失敗，請稍後再試！');
+          setMessage({ type: 'error', text: error.response?.data?.error || '標記失敗，請稍後再試！' });
         }
       } else {
-        alert('標記失敗，請檢查網路連線。');
+        setMessage({ type: 'error', text: '標記失敗，請檢查網路連線。' });
       }
     } finally {
       setResolvingId(null);
     }
   };
 
-  if (loading) {
-    return <div className="text-muted-foreground p-8">正在努力載入任務清單...</div>;
-  }
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-        <Wrench className="w-8 h-8 text-primary" />
-        待處理的維修任務
-      </h1>
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
+        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
+          <Wrench className="w-8 h-8 text-primary" />
+          待處理的維修任務 ({totalCount})
+        </h1>
+      </div>
 
-      {tasks.length === 0 ? (
+      {message && (
+        <div
+          className={`p-4 rounded-md flex items-center justify-between border ${
+            message.type === 'success'
+              ? 'bg-green-500/10 border-green-500/30 text-green-500'
+              : 'bg-destructive/10 border-destructive/30 text-destructive'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {message.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+            <span>{message.text}</span>
+          </div>
+          <button onClick={() => setMessage(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-muted-foreground p-8 text-center">正在努力載入任務清單...</div>
+      ) : tasks.length === 0 ? (
         <Card className="border-dashed bg-secondary/50">
           <CardContent className="flex flex-col items-center justify-center p-12 text-center">
             <Check className="w-12 h-12 text-green-500 mb-4" />
@@ -132,6 +195,33 @@ const MaintenanceTasks: React.FC = () => {
               </Card>
             );
           })}
+        </div>
+      )}
+
+      {/* 分頁控制列 */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between pt-4 border-t border-border">
+          <p className="text-sm text-muted-foreground">
+            第 {page} 頁 / 共 {totalPages} 頁 (每頁 {pageSize} 筆，未解決總計 {totalCount} 筆)
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1 || loading}
+            >
+              <ChevronLeft className="w-4 h-4 mr-1" /> 上一頁
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || loading}
+            >
+              下一頁 <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
+          </div>
         </div>
       )}
     </div>

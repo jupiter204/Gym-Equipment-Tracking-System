@@ -2,129 +2,103 @@ import React, { useEffect, useState } from 'react';
 import apiClient from '../../services/apiClient';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
-import { Download, Loader2 } from 'lucide-react';
+import { Download, Loader2, AlertCircle } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   LineChart, Line
 } from 'recharts';
-import type { Equipment, MaintenanceRecord } from '../../types';
-
-interface MonthTrend {
-  name: string;
-  faults: number;
-  maintenance: number;
-}
-
-interface CategoryStat {
-  name: string;
-  count: number;
-}
+import type { StatsResponse, MonthlyTrend, CategoryStat, MaintenanceRecord } from '../../types';
 
 const Analytics: React.FC = () => {
   const [loading, setLoading] = useState(true);
-  const [monthData, setMonthData] = useState<MonthTrend[]>([]);
+  const [exporting, setExporting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [monthData, setMonthData] = useState<MonthlyTrend[]>([]);
   const [categoryData, setCategoryData] = useState<CategoryStat[]>([]);
-  const [rawData, setRawData] = useState<MaintenanceRecord[]>([]);
 
   useEffect(() => {
-    const fetchData = async () => {
+    let ignore = false;
+    const load = async () => {
       try {
-        const [eqRes, maintRes] = await Promise.all([
-          apiClient.get('/private/equipments'),
-          apiClient.get('/private/maintenance-records'),
-        ]);
-
-        const equipments: Equipment[] = eqRes.data || [];
-        const records: MaintenanceRecord[] = maintRes.data || [];
-        setRawData(records);
-
-        // 1. 計算各分類的維修次數
-        const eqCategoryMap: Record<string, string> = {};
-        equipments.forEach((eq) => {
-          eqCategoryMap[eq.lid] = eq.category || '未分類';
-        });
-
-        const catMap: Record<string, number> = {};
-        records.forEach((r) => {
-          const cat = eqCategoryMap[r.equipment_id] || '未知分類';
-          catMap[cat] = (catMap[cat] || 0) + 1;
-        });
-
-        const computedCategory = Object.keys(catMap).map((k) => ({ name: k, count: catMap[k] }));
-        if (computedCategory.length === 0) {
-          computedCategory.push({ name: '無故障紀錄', count: 0 });
+        const res = await apiClient.get<StatsResponse>('/private/stats');
+        if (!ignore && res.data) {
+          setMonthData(res.data.monthly_trends || []);
+          setCategoryData(res.data.category_stats || []);
         }
-        setCategoryData(computedCategory);
-
-        // 2. 計算近六個月的通報與保養趨勢
-        const months = Array.from({ length: 6 }).map((_, i) => {
-          const d = new Date();
-          d.setMonth(d.getMonth() - (5 - i));
-          return {
-            monthKey: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
-            label: `${d.getMonth() + 1}月`,
-            faults: 0,
-            maintenance: 0,
-          };
-        });
-
-        records.forEach((r) => {
-          const d = new Date(r.created_at);
-          const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-          const monthObj = months.find((m) => m.monthKey === mKey);
-          if (monthObj) {
-            if (r.is_resolved) {
-              monthObj.maintenance += 1;
-            } else {
-              monthObj.faults += 1;
-            }
-          }
-        });
-
-        setMonthData(
-          months.map((m) => ({ name: m.label, faults: m.faults, maintenance: m.maintenance }))
-        );
       } catch {
-        // Silently handled
+        if (!ignore) {
+          setErrorMsg('載入統計數據失敗，請稍後重試。');
+        }
       } finally {
-        setLoading(false);
+        if (!ignore) {
+          setLoading(false);
+        }
       }
     };
-
-    fetchData();
+    void load();
+    return () => {
+      ignore = true;
+    };
   }, []);
 
-  const handleExportCSV = () => {
-    if (rawData.length === 0) {
-      alert('沒有資料可匯出');
-      return;
+  const handleExportCSV = async () => {
+    setExporting(true);
+    setErrorMsg(null);
+    try {
+      // 透過分頁迴圈取得全量紀錄
+      let allRecords: MaintenanceRecord[] = [];
+      let offset = 0;
+      const limit = 100;
+      let hasMore = true;
+
+      while (hasMore) {
+        const res = await apiClient.get<MaintenanceRecord[]>('/private/maintenance-records', {
+          params: { limit, offset },
+        });
+        const batch = res.data || [];
+        allRecords = allRecords.concat(batch);
+        const total = parseInt(res.headers['x-total-count'] || '0', 10);
+        offset += batch.length;
+        if (batch.length === 0 || (total > 0 && allRecords.length >= total)) {
+          hasMore = false;
+        }
+      }
+
+      if (allRecords.length === 0) {
+        setErrorMsg('目前尚無任何維修紀錄可供匯出。');
+        return;
+      }
+
+      const headers = ['通報單號', '設備名稱', '資產編號', '回報者類型', '問題描述', '處理狀態', '處理備註', '通報時間'];
+      
+      const csvContent = [
+        headers.join(','),
+        ...allRecords.map((r) => [
+          r.lid,
+          `"${(r.equipment_name || '').replace(/"/g, '""')}"`,
+          `"${(r.asset_code || '').replace(/"/g, '""')}"`,
+          r.reporter_type === 'public' ? '民眾' : r.reporter_type === 'system' ? '系統' : '員工',
+          `"${(r.description || '').replace(/"/g, '""')}"`,
+          r.is_resolved ? '已解決' : '未解決',
+          `"${(r.resolve_note || '').replace(/"/g, '""')}"`,
+          new Date(r.created_at).toLocaleString(),
+        ].join(',')),
+      ].join('\n');
+
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `維修紀錄報表_${Date.now()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch {
+      setErrorMsg('匯出報表時發生錯誤，請稍後重試。');
+    } finally {
+      setExporting(false);
     }
-
-    const headers = ['通報單號', '設備名稱', '資產編號', '回報者類型', '問題描述', '處理狀態', '處理備註', '通報時間'];
-    
-    const csvContent = [
-      headers.join(','),
-      ...rawData.map((r) => [
-        r.lid,
-        `"${(r.equipment_name || '').replace(/"/g, '""')}"`,
-        `"${(r.asset_code || '').replace(/"/g, '""')}"`,
-        r.reporter_type === 'public' ? '民眾' : r.reporter_type === 'system' ? '系統' : '員工',
-        `"${(r.description || '').replace(/"/g, '""')}"`,
-        r.is_resolved ? '已解決' : '未解決',
-        `"${(r.resolve_note || '').replace(/"/g, '""')}"`,
-        new Date(r.created_at).toLocaleString(),
-      ].join(',')),
-    ].join('\n');
-
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `維修紀錄報表_${Date.now()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
   if (loading) {
@@ -142,10 +116,18 @@ const Analytics: React.FC = () => {
           <h1 className="text-3xl font-bold tracking-tight">數據分析中心</h1>
           <p className="text-muted-foreground mt-2">檢視器材維修趨勢與匯出報表</p>
         </div>
-        <Button variant="outline" className="flex items-center gap-2" onClick={handleExportCSV}>
-          <Download className="w-4 h-4" /> 匯出 CSV 檔案
+        <Button variant="outline" className="flex items-center gap-2" onClick={handleExportCSV} disabled={exporting}>
+          {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          {exporting ? '正在匯出中...' : '匯出 CSV 檔案'}
         </Button>
       </div>
+
+      {errorMsg && (
+        <div className="p-4 bg-destructive/10 border border-destructive/20 text-destructive rounded-md flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card>
