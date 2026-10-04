@@ -20,6 +20,17 @@ func InitJWT() error {
 	if len(secret) < 32 {
 		return errors.New("JWT_SECRET 未設定或長度不足 32 字元")
 	}
+
+	appEnv := strings.ToLower(os.Getenv("APP_ENV"))
+	if appEnv == "production" || appEnv == "prod" {
+		lowerSecret := strings.ToLower(secret)
+		if strings.Contains(lowerSecret, "please_generate") ||
+			strings.Contains(lowerSecret, "change_this") ||
+			secret == "please_generate_and_change_to_a_secure_jwt_secret_with_at_least_32_bytes!" {
+			return errors.New("production 環境禁止使用範例或佔位 JWT_SECRET，請更換為安全的隨機金鑰")
+		}
+	}
+
 	jwtKey = []byte(secret)
 	return nil
 }

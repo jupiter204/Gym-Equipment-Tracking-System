@@ -29,7 +29,14 @@ import (
 func (h *Handler) CreateUser(c *gin.Context) {
 	var req models.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "Invalid request payload: "+err.Error())
+		slog.Warn("CreateUser validation failed", "err", err)
+		respondError(c, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Bcrypt max password limit is 72 bytes
+	if len([]byte(req.Password)) > 72 {
+		respondError(c, http.StatusBadRequest, "Password must not exceed 72 bytes")
 		return
 	}
 
@@ -72,7 +79,8 @@ func (h *Handler) CreateUser(c *gin.Context) {
 func (h *Handler) UpdateUser(c *gin.Context) {
 	var req models.UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "Invalid request payload: "+err.Error())
+		slog.Warn("UpdateUser validation failed", "err", err)
+		respondError(c, http.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -85,26 +93,51 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		}
 	}
 
-	// If role is changing, check if we are attempting to demote the last administrator
-	if req.Role != nil && *req.Role != "admin" {
-		var targetRole string
-		err := h.DB.QueryRow(c.Request.Context(), "SELECT role FROM users WHERE lid = $1", req.LID).Scan(&targetRole)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				respondError(c, http.StatusNotFound, "User not found")
-				return
-			}
-			respondError(c, http.StatusInternalServerError, "Database error")
+	if req.Password != nil && *req.Password != "" {
+		if len([]byte(*req.Password)) > 72 {
+			respondError(c, http.StatusBadRequest, "Password must not exceed 72 bytes")
 			return
 		}
+	}
 
-		if targetRole == "admin" {
-			var adminCount int
-			_ = h.DB.QueryRow(c.Request.Context(), "SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&adminCount)
-			if adminCount <= 1 {
-				respondError(c, http.StatusForbidden, "Cannot demote the last administrator")
-				return
-			}
+	tx, err := h.DB.Begin(c.Request.Context())
+	if err != nil {
+		slog.Error("Failed to begin transaction", "err", err)
+		respondError(c, http.StatusInternalServerError, "Database transaction error")
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
+	// Check if target user exists
+	var targetRole string
+	err = tx.QueryRow(c.Request.Context(), "SELECT role FROM users WHERE lid = $1", req.LID).Scan(&targetRole)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			respondError(c, http.StatusNotFound, "User not found")
+			return
+		}
+		slog.Error("User lookup failed", "err", err)
+		respondError(c, http.StatusInternalServerError, "Database error")
+		return
+	}
+
+	// If role is changing from admin, atomically lock admin rows to avoid race conditions
+	if req.Role != nil && *req.Role != "admin" && targetRole == "admin" {
+		rows, err := tx.Query(c.Request.Context(), "SELECT lid FROM users WHERE role = 'admin' FOR UPDATE")
+		if err != nil {
+			slog.Error("Failed to lock admin rows", "err", err)
+			respondError(c, http.StatusInternalServerError, "Database lock error")
+			return
+		}
+		adminCount := 0
+		for rows.Next() {
+			adminCount++
+		}
+		rows.Close()
+
+		if adminCount <= 1 {
+			respondError(c, http.StatusForbidden, "Cannot demote the last administrator")
+			return
 		}
 	}
 
@@ -122,6 +155,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		args = append(args, *req.Role)
 		argCount++
 	}
+	passwordChanged := false
 	if req.Password != nil && *req.Password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
 		if err != nil {
@@ -131,6 +165,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		query += "password_hash = $" + fmt.Sprint(argCount) + ", "
 		args = append(args, string(hashedPassword))
 		argCount++
+		passwordChanged = true
 	}
 
 	if argCount == 1 {
@@ -142,7 +177,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	query += " WHERE lid = $" + fmt.Sprint(argCount)
 	args = append(args, req.LID)
 
-	result, err := h.DB.Exec(c.Request.Context(), query, args...)
+	result, err := tx.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		slog.Error("Update user failed", "err", err)
 		respondError(c, http.StatusInternalServerError, "Update user failed")
@@ -151,6 +186,22 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 
 	if result.RowsAffected() == 0 {
 		respondError(c, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// When password is changed, revoke all existing refresh tokens for this user in the same tx
+	if passwordChanged {
+		_, err = tx.Exec(c.Request.Context(), "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL", req.LID)
+		if err != nil {
+			slog.Error("Failed to revoke refresh tokens on password change", "err", err)
+			respondError(c, http.StatusInternalServerError, "Failed to revoke active sessions")
+			return
+		}
+	}
+
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		slog.Error("Transaction commit failed", "err", err)
+		respondError(c, http.StatusInternalServerError, "Commit failed")
 		return
 	}
 
@@ -184,9 +235,17 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 		return
 	}
 
+	tx, err := h.DB.Begin(c.Request.Context())
+	if err != nil {
+		slog.Error("Failed to begin transaction", "err", err)
+		respondError(c, http.StatusInternalServerError, "Database transaction error")
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
 	// Verify target user and ensure at least one admin remains
 	var targetRole string
-	err := h.DB.QueryRow(c.Request.Context(), "SELECT role FROM users WHERE lid = $1", req.LID).Scan(&targetRole)
+	err = tx.QueryRow(c.Request.Context(), "SELECT role FROM users WHERE lid = $1", req.LID).Scan(&targetRole)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			respondError(c, http.StatusNotFound, "User not found")
@@ -197,15 +256,25 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 	}
 
 	if targetRole == "admin" {
-		var adminCount int
-		_ = h.DB.QueryRow(c.Request.Context(), "SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&adminCount)
+		rows, err := tx.Query(c.Request.Context(), "SELECT lid FROM users WHERE role = 'admin' FOR UPDATE")
+		if err != nil {
+			slog.Error("Failed to lock admin rows", "err", err)
+			respondError(c, http.StatusInternalServerError, "Database lock error")
+			return
+		}
+		adminCount := 0
+		for rows.Next() {
+			adminCount++
+		}
+		rows.Close()
+
 		if adminCount <= 1 {
 			respondError(c, http.StatusForbidden, "Cannot delete the last administrator")
 			return
 		}
 	}
 
-	result, err := h.DB.Exec(c.Request.Context(), "DELETE FROM users WHERE lid = $1", req.LID)
+	result, err := tx.Exec(c.Request.Context(), "DELETE FROM users WHERE lid = $1", req.LID)
 	if err != nil {
 		slog.Error("Delete user failed", "err", err)
 		respondError(c, http.StatusInternalServerError, "Delete user failed")
@@ -214,6 +283,12 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 
 	if result.RowsAffected() == 0 {
 		respondError(c, http.StatusNotFound, "User not found")
+		return
+	}
+
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		slog.Error("Transaction commit failed", "err", err)
+		respondError(c, http.StatusInternalServerError, "Commit failed")
 		return
 	}
 
@@ -229,13 +304,23 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 // @Param        limit   query     int  false "每頁筆數 (預設 50，最大 100)"
 // @Param        offset  query     int  false "偏移量 (預設 0)"
 // @Success      200      {array}   models.UserResponse "使用者列表"
+// @Header       200      {integer} X-Total-Count "符合條件的總筆數"
 // @Failure      500      {object}  models.ErrorResponse "伺服器內部錯誤"
 // @Security     BearerAuth
 // @Router       /api/private/users [get]
 func (h *Handler) GetUsers(c *gin.Context) {
 	limit, offset := parsePagination(c)
 
-	query := `SELECT lid, username, name, role FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+	// 計算總筆數供分頁使用
+	var totalCount int
+	if err := h.DB.QueryRow(c.Request.Context(), "SELECT COUNT(*) FROM users").Scan(&totalCount); err != nil {
+		slog.Error("Count users failed", "err", err)
+		respondError(c, http.StatusInternalServerError, "Query failed")
+		return
+	}
+	c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
+
+	query := `SELECT lid, username, name, role FROM users ORDER BY created_at DESC, lid LIMIT $1 OFFSET $2`
 	rows, err := h.DB.Query(c.Request.Context(), query, limit, offset)
 	if err != nil {
 		slog.Error("Query users failed", "err", err)
@@ -263,3 +348,4 @@ func (h *Handler) GetUsers(c *gin.Context) {
 
 	c.JSON(http.StatusOK, users)
 }
+

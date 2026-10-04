@@ -72,13 +72,18 @@ func (h *Handler) generateTokens(ctx context.Context, userUUID string, role stri
 
 	// Persist refresh token family record for revocation tracking
 	tokenHashStr := hashToken(refreshTokenString)
-	_, _ = h.DB.Exec(ctx, `
+	if _, err := h.DB.Exec(ctx, `
 		INSERT INTO refresh_tokens (jti, user_id, token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)
-	`, refreshJTI, userUUID, tokenHashStr, refreshExp)
+	`, refreshJTI, userUUID, tokenHashStr, refreshExp); err != nil {
+		slog.Error("Failed to persist refresh token", "err", err)
+		return "", "", err
+	}
 
 	return accessTokenString, refreshTokenString, nil
 }
+
+const refreshGracePeriod = 10 * time.Second
 
 // AuthenticateUser godoc
 // @Summary      使用者登入
@@ -183,22 +188,65 @@ func (h *Handler) RefreshTokenHandler(c *gin.Context) {
 		return
 	}
 
-	// Verify token revocation if JTI is present
-	if jti, ok := claims["jti"].(string); ok && jti != "" {
+	jti, ok := claims["jti"].(string)
+	if !ok || jti == "" {
+		respondError(c, http.StatusUnauthorized, "Invalid token claims: missing jti")
+		return
+	}
+
+	// 原子性更新：僅當該 JTI 尚未撤銷且未過期時，設為 revoked_at = NOW()
+	res, err := h.DB.Exec(c.Request.Context(), `
+		UPDATE refresh_tokens
+		   SET revoked_at = NOW()
+		 WHERE jti = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > NOW()
+	`, jti, userUUID)
+	if err != nil {
+		slog.Error("Database error during token refresh", "err", err)
+		respondError(c, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
+	if res.RowsAffected() == 0 {
+		// 查明為何無法更新 (失敗關閉安全原則)
+		var expiresAt time.Time
 		var revokedAt *time.Time
-		err := h.DB.QueryRow(c.Request.Context(), "SELECT revoked_at FROM refresh_tokens WHERE jti = $1", jti).Scan(&revokedAt)
-		if err == nil && revokedAt != nil {
-			// Token has been revoked! Revoke entire token family as reuse detection defense
-			_, _ = h.DB.Exec(c.Request.Context(), "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL", userUUID)
+		err := h.DB.QueryRow(c.Request.Context(), `
+			SELECT expires_at, revoked_at FROM refresh_tokens WHERE jti = $1 AND user_id = $2
+		`, jti, userUUID).Scan(&expiresAt, &revokedAt)
+
+		if err != nil {
+			// 查無此紀錄 -> 拒絕
+			respondError(c, http.StatusUnauthorized, "Invalid refresh token")
+			return
+		}
+
+		if time.Now().After(expiresAt) {
+			respondError(c, http.StatusUnauthorized, "Refresh token expired")
+			return
+		}
+
+		if revokedAt != nil {
+			// 若撤銷時間在寬限期內 (如多分頁並發刷新)，僅回報已過期，不撤銷整個 token family
+			if time.Since(*revokedAt) <= refreshGracePeriod {
+				respondError(c, http.StatusUnauthorized, "Refresh token was recently rotated")
+				return
+			}
+			// 超過寬限期：觸發 Token Reuse 警示，撤銷該使用者所有未撤銷之 Token
+			slog.Warn("Token reuse detected, revoking all active refresh tokens for user", "user_id", userUUID)
+			_, _ = h.DB.Exec(c.Request.Context(), `
+				UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL
+			`, userUUID)
 			respondError(c, http.StatusUnauthorized, "Refresh token has been revoked")
 			return
 		}
-		// Invalidate current refresh token upon successful rotation
-		_, _ = h.DB.Exec(c.Request.Context(), "UPDATE refresh_tokens SET revoked_at = NOW() WHERE jti = $1", jti)
+
+		respondError(c, http.StatusUnauthorized, "Invalid refresh token")
+		return
 	}
 
 	var role string
 	err = h.DB.QueryRow(c.Request.Context(), "SELECT role FROM users WHERE lid = $1", userUUID).Scan(&role)
+
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			respondError(c, http.StatusUnauthorized, "User account no longer exists")

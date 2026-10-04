@@ -67,9 +67,42 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/auth/logout": {
+            "post": {
+                "description": "作廢目前的 Refresh Token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "登出系統",
+                "parameters": [
+                    {
+                        "description": "Refresh Token",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/models.RefreshRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "登出成功",
+                        "schema": {
+                            "$ref": "#/definitions/models.MessageResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/auth/refresh": {
             "post": {
-                "description": "使用 Refresh Token 換取新的 Access Token",
+                "description": "使用 Refresh Token 換取新的 Access Token (支援 token rotation)",
                 "consumes": [
                     "application/json"
                 ],
@@ -96,6 +129,12 @@ const docTemplate = `{
                         "description": "刷新成功",
                         "schema": {
                             "$ref": "#/definitions/models.TokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "請求格式錯誤",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
                     "401": {
@@ -149,6 +188,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
+                    "409": {
+                        "description": "資產編號已存在",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "伺服器內部錯誤",
                         "schema": {
@@ -163,7 +208,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "刪除一個設備紀錄 (僅限管理員)",
+                "description": "刪除一個設備紀錄 (僅限管理員)。若該設備仍有關聯維修紀錄則轉為下架/封存，以保留歷史稽核。",
                 "consumes": [
                     "application/json"
                 ],
@@ -173,7 +218,7 @@ const docTemplate = `{
                 "tags": [
                     "private"
                 ],
-                "summary": "刪除設備",
+                "summary": "刪除或下架設備",
                 "parameters": [
                     {
                         "description": "刪除設備請求",
@@ -187,13 +232,19 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "成功刪除設備",
+                        "description": "成功刪除或封存設備",
                         "schema": {
                             "$ref": "#/definitions/models.MessageResponse"
                         }
                     },
                     "400": {
                         "description": "請求格式錯誤",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "設備不存在",
                         "schema": {
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
@@ -247,6 +298,18 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
+                    "404": {
+                        "description": "設備不存在",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "資產編號已存在",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "伺服器內部錯誤",
                         "schema": {
@@ -263,7 +326,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "回傳資料庫中所有設備的完整資訊 (僅限管理員與維修人員)",
+                "description": "回傳資料庫中未下架設備的完整資訊，支援分頁 (僅限管理員與維修人員)",
                 "consumes": [
                     "application/json"
                 ],
@@ -274,6 +337,20 @@ const docTemplate = `{
                     "private"
                 ],
                 "summary": "獲取所有設備詳情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "每頁筆數 (預設 50，最大 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "偏移量 (預設 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -281,6 +358,12 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/models.EquipmentDetail"
+                            }
+                        },
+                        "headers": {
+                            "X-Total-Count": {
+                                "type": "integer",
+                                "description": "符合條件的總筆數"
                             }
                         }
                     },
@@ -300,7 +383,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "取得所有維修紀錄 (僅限管理員與維修人員)",
+                "description": "取得所有維修紀錄，支援狀態篩選與分頁 (僅限管理員與維修人員)",
                 "consumes": [
                     "application/json"
                 ],
@@ -317,6 +400,18 @@ const docTemplate = `{
                         "description": "是否顯示已解決 (true/false)",
                         "name": "resolved",
                         "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每頁筆數 (預設 50，最大 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "偏移量 (預設 0)",
+                        "name": "offset",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -327,6 +422,12 @@ const docTemplate = `{
                             "items": {
                                 "$ref": "#/definitions/models.MaintenanceRecord"
                             }
+                        }
+                    },
+                    "400": {
+                        "description": "查詢參數錯誤",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
                     "500": {
@@ -345,7 +446,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "將維修紀錄標記為已解決，並將設備狀態恢復為 normal (僅限管理員與維修人員)。註：lid是維修紀錄列表的lid",
+                "description": "將維修紀錄標記為已解決，並將設備狀態恢復為 normal。會驗證紀錄是否已經解決避免重複操作。",
                 "consumes": [
                     "application/json"
                 ],
@@ -384,6 +485,46 @@ const docTemplate = `{
                         "description": "紀錄不存在",
                         "schema": {
                             "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "紀錄已被解決",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "伺服器內部錯誤",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/private/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "取得儀表板與數據分析頁面所需的設備總數、狀態佔比、分類維修數與近六個月趨勢 (管理員與維修人員皆可存取)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "private"
+                ],
+                "summary": "取得系統統計聚合數據",
+                "responses": {
+                    "200": {
+                        "description": "統計數據",
+                        "schema": {
+                            "$ref": "#/definitions/models.StatsResponse"
                         }
                     },
                     "500": {
@@ -457,7 +598,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "刪除使用者 (僅限管理員)",
+                "description": "刪除使用者 (僅限管理員)。不允許刪除自己或刪除最後一位管理員。",
                 "consumes": [
                     "application/json"
                 ],
@@ -492,6 +633,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
+                    "403": {
+                        "description": "不可刪除自己或最後一位管理員",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
                     "404": {
                         "description": "使用者不存在",
                         "schema": {
@@ -512,7 +659,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "修改使用者資料 (僅限管理員)",
+                "description": "修改使用者資料 (僅限管理員)。不允許自降身分或移除最後一位管理員。",
                 "consumes": [
                     "application/json"
                 ],
@@ -547,6 +694,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
+                    "403": {
+                        "description": "無權限修改自己角色或降級最後管理員",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
                     "404": {
                         "description": "使用者不存在",
                         "schema": {
@@ -569,7 +722,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "取得所有使用者資料 (僅限管理員)",
+                "description": "取得所有使用者資料，支援分頁 (僅限管理員)",
                 "consumes": [
                     "application/json"
                 ],
@@ -580,6 +733,20 @@ const docTemplate = `{
                     "private"
                 ],
                 "summary": "查看使用者列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "每頁筆數 (預設 50，最大 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "偏移量 (預設 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "使用者列表",
@@ -587,6 +754,12 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/models.UserResponse"
+                            }
+                        },
+                        "headers": {
+                            "X-Total-Count": {
+                                "type": "integer",
+                                "description": "符合條件的總筆數"
                             }
                         }
                     },
@@ -645,7 +818,7 @@ const docTemplate = `{
         },
         "/api/public/report": {
             "post": {
-                "description": "建立一個新的報修紀錄，並將設備狀態更新為 faulty。會檢查是否已有未處理的紀錄。",
+                "description": "建立一個新的報修紀錄，並將設備狀態更新為 faulty。由 server 端固定 reporter_type 為 public 並限制請求大小。",
                 "consumes": [
                     "application/json"
                 ],
@@ -675,13 +848,19 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "請求格式錯誤或已有未處理紀錄",
+                        "description": "請求格式錯誤",
                         "schema": {
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
                     "404": {
                         "description": "設備不存在",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "設備已有未處理紀錄",
                         "schema": {
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
@@ -697,30 +876,49 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "models.CategoryStat": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "models.CreateEquipmentRequest": {
             "type": "object",
             "required": [
                 "asset_code",
+                "maint_interval",
                 "name"
             ],
             "properties": {
                 "asset_code": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 50,
+                    "minLength": 1
                 },
                 "category": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 50
                 },
                 "last_maint_date": {
                     "type": "string"
                 },
                 "location": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 100
                 },
                 "maint_interval": {
-                    "type": "integer"
+                    "type": "integer",
+                    "minimum": 1
                 },
                 "name": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
                 }
             }
         },
@@ -734,17 +932,26 @@ const docTemplate = `{
             ],
             "properties": {
                 "name": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 },
                 "password": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 72,
+                    "minLength": 8
                 },
                 "role": {
-                    "description": "'admin' or 'staff'",
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                        "admin",
+                        "staff"
+                    ]
                 },
                 "username": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 32,
+                    "minLength": 3
                 }
             }
         },
@@ -822,6 +1029,29 @@ const docTemplate = `{
                 }
             }
         },
+        "models.EquipmentSummary": {
+            "type": "object",
+            "properties": {
+                "faultRate": {
+                    "type": "integer"
+                },
+                "faulty": {
+                    "type": "integer"
+                },
+                "normal": {
+                    "type": "integer"
+                },
+                "pending": {
+                    "type": "integer"
+                },
+                "repairing": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "models.ErrorResponse": {
             "type": "object",
             "properties": {
@@ -839,12 +1069,10 @@ const docTemplate = `{
             ],
             "properties": {
                 "password": {
-                    "type": "string",
-                    "example": "admin"
+                    "type": "string"
                 },
                 "username": {
-                    "type": "string",
-                    "example": "admin"
+                    "type": "string"
                 }
             }
         },
@@ -873,6 +1101,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "reporter_type": {
+                    "description": "'public', 'staff', 'system'",
                     "type": "string"
                 },
                 "resolve_note": {
@@ -884,17 +1113,15 @@ const docTemplate = `{
             "type": "object",
             "required": [
                 "description",
-                "equipment_id",
-                "reporter_type"
+                "equipment_id"
             ],
             "properties": {
                 "description": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 500,
+                    "minLength": 1
                 },
                 "equipment_id": {
-                    "type": "string"
-                },
-                "reporter_type": {
                     "type": "string"
                 }
             }
@@ -905,6 +1132,23 @@ const docTemplate = `{
                 "message": {
                     "type": "string",
                     "example": "operation successful"
+                }
+            }
+        },
+        "models.MonthlyTrend": {
+            "type": "object",
+            "properties": {
+                "faults": {
+                    "type": "integer"
+                },
+                "maintenance": {
+                    "type": "integer"
+                },
+                "monthKey": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
                 }
             }
         },
@@ -927,11 +1171,32 @@ const docTemplate = `{
             ],
             "properties": {
                 "lid": {
-                    "description": "維修紀錄列表的lid",
                     "type": "string"
                 },
                 "resolve_note": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 500,
+                    "minLength": 1
+                }
+            }
+        },
+        "models.StatsResponse": {
+            "type": "object",
+            "properties": {
+                "category_stats": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CategoryStat"
+                    }
+                },
+                "equipment_summary": {
+                    "$ref": "#/definitions/models.EquipmentSummary"
+                },
+                "monthly_trends": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.MonthlyTrend"
+                    }
                 }
             }
         },
@@ -953,22 +1218,29 @@ const docTemplate = `{
             ],
             "properties": {
                 "asset_code": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 50,
+                    "minLength": 1
                 },
                 "category": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 50
                 },
                 "lid": {
                     "type": "string"
                 },
                 "location": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 100
                 },
                 "maint_interval": {
-                    "type": "integer"
+                    "type": "integer",
+                    "minimum": 1
                 },
                 "name": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
                 }
             }
         },
@@ -982,13 +1254,21 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "name": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 },
                 "password": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 72,
+                    "minLength": 8
                 },
                 "role": {
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                        "admin",
+                        "staff"
+                    ]
                 }
             }
         },
@@ -1023,7 +1303,7 @@ const docTemplate = `{
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "1.0",
-	Host:             "jupiterhsu.ddns.net",
+	Host:             "",
 	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "設備管理系統 API",

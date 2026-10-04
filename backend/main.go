@@ -17,10 +17,13 @@ import (
 	_ "backend/docs"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"golang.org/x/crypto/bcrypt"
+	"strings"
 )
 
 // @title           設備管理系統 API
@@ -51,6 +54,9 @@ func main() {
 	dbPool := database.InitDB()
 	defer dbPool.Close()
 
+	// 初始化初始管理員 (若資料庫尚無任何使用者且提供環境變數)
+	bootstrapAdmin(dbPool)
+
 	// 初始化 Handler (依賴注入)
 	h := handlers.NewHandler(dbPool)
 
@@ -62,11 +68,23 @@ func main() {
 	}
 	c := cron.New(cron.WithLocation(loc))
 
-	// 1. 初始啟動時在背景檢查一次
-	go h.CheckAndCreateMaintenanceTasks()
+	// 1. 初始啟動時在背景檢查一次 (加入 recover 保護)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("初始檢查定期保養發生 panic", "recover", r)
+			}
+		}()
+		h.CheckAndCreateMaintenanceTasks()
+	}()
 
-	// 2. 設定每日凌晨 02:00 自動檢查
+	// 2. 設定每日凌晨 02:00 自動檢查 (加入 recover 保護)
 	_, err = c.AddFunc("0 2 * * *", func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("每日保養定時任務發生 panic", "recover", r)
+			}
+		}()
 		h.CheckAndCreateMaintenanceTasks()
 	})
 	if err != nil {
@@ -99,7 +117,8 @@ func main() {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
 		if err := dbPool.Ping(ctx); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "error": err.Error()})
+			slog.Error("資料庫健康檢查失敗", "err", err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
@@ -140,6 +159,7 @@ func main() {
 				authorized.GET("/equipments", h.GetDetailEquipment)
 				authorized.GET("/maintenance-records", h.GetMaintenanceRecords)
 				authorized.PATCH("/maintenance-records/resolve", h.ResolveMaintenanceRecord)
+				authorized.GET("/stats", h.GetStats)
 			}
 
 			// 僅限管理員
@@ -196,4 +216,50 @@ func main() {
 	}
 
 	slog.Info("伺服器已安全停止")
+}
+
+// bootstrapAdmin 於系統尚無任何使用者時，依環境變數建立初始管理員
+func bootstrapAdmin(dbPool *pgxpool.Pool) {
+	username := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_USERNAME"))
+	password := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
+	if username == "" || password == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var userCount int
+	if err := dbPool.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
+		slog.Error("檢查使用者數量失敗", "err", err)
+		return
+	}
+
+	if userCount == 0 {
+		if len(username) < 3 || len(username) > 32 {
+			slog.Error("初始管理員帳號長度無效 (須為 3-32 字元)")
+			return
+		}
+		if len([]byte(password)) < 6 || len([]byte(password)) > 72 {
+			slog.Error("初始管理員密碼長度無效 (須為 6-72 位元組)")
+			return
+		}
+
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			slog.Error("初始管理員密碼雜湊失敗", "err", err)
+			return
+		}
+
+		_, err = dbPool.Exec(ctx, `
+			INSERT INTO users (username, password_hash, name, role)
+			VALUES ($1, $2, $3, 'admin')
+			ON CONFLICT (username) DO NOTHING
+		`, username, string(hash), "系統管理員")
+		if err != nil {
+			slog.Error("建立初始管理員失敗", "err", err)
+		} else {
+			slog.Info("已成功建立初始管理員帳號", "username", username)
+		}
+	}
 }

@@ -141,3 +141,32 @@ type UserResponse struct {
 	Name     string `json:"name"`
 	Role     string `json:"role"`
 }
+
+// --- Stats Models ---
+
+type EquipmentSummary struct {
+	Total        int `json:"total"`
+	Normal       int `json:"normal"`
+	Faulty       int `json:"faulty"`
+	PendingMaint int `json:"pending"`
+	Repairing    int `json:"repairing"`
+	FaultRate    int `json:"faultRate"`
+}
+
+type CategoryStat struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type MonthlyTrend struct {
+	Name        string `json:"name"`
+	MonthKey    string `json:"monthKey"`
+	Faults      int    `json:"faults"`
+	Maintenance int    `json:"maintenance"`
+}
+
+type StatsResponse struct {
+	EquipmentSummary EquipmentSummary `json:"equipment_summary"`
+	CategoryStats    []CategoryStat   `json:"category_stats"`
+	MonthlyTrends    []MonthlyTrend   `json:"monthly_trends"`
+}

@@ -57,7 +57,7 @@ func (h *Handler) PostMaintenanceRecord(c *gin.Context) {
 		SELECT
 			true,
 			EXISTS(SELECT 1 FROM maintenance_records WHERE equipment_id = $1 AND is_resolved = false)
-		FROM equipments WHERE lid = $1`
+		FROM equipments WHERE lid = $1 AND retired_at IS NULL`
 
 	err = tx.QueryRow(c.Request.Context(), checkQuery, req.EquipmentID).Scan(&exists, &hasActive)
 	if err != nil {
@@ -134,6 +134,7 @@ func (h *Handler) GetMaintenanceRecords(c *gin.Context) {
 		FROM maintenance_records m
 		JOIN equipments e ON m.equipment_id = e.lid`
 
+	var totalCount int
 	var query string
 	var rows pgx.Rows
 	var err error
@@ -144,10 +145,27 @@ func (h *Handler) GetMaintenanceRecords(c *gin.Context) {
 			return
 		}
 		isResolved := resolvedParam == "true"
-		query = baseQuery + " WHERE m.is_resolved = $1 ORDER BY m.created_at DESC LIMIT $2 OFFSET $3"
+
+		countQuery := `SELECT COUNT(*) FROM maintenance_records WHERE is_resolved = $1`
+		if err := h.DB.QueryRow(c.Request.Context(), countQuery, isResolved).Scan(&totalCount); err != nil {
+			slog.Error("Count maintenance records failed", "err", err)
+			respondError(c, http.StatusInternalServerError, "Query failed")
+			return
+		}
+		c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
+
+		query = baseQuery + " WHERE m.is_resolved = $1 ORDER BY m.created_at DESC, m.lid LIMIT $2 OFFSET $3"
 		rows, err = h.DB.Query(c.Request.Context(), query, isResolved, limit, offset)
 	} else {
-		query = baseQuery + " ORDER BY m.created_at DESC LIMIT $1 OFFSET $2"
+		countQuery := `SELECT COUNT(*) FROM maintenance_records`
+		if err := h.DB.QueryRow(c.Request.Context(), countQuery).Scan(&totalCount); err != nil {
+			slog.Error("Count maintenance records failed", "err", err)
+			respondError(c, http.StatusInternalServerError, "Query failed")
+			return
+		}
+		c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
+
+		query = baseQuery + " ORDER BY m.created_at DESC, m.lid LIMIT $1 OFFSET $2"
 		rows, err = h.DB.Query(c.Request.Context(), query, limit, offset)
 	}
 
@@ -273,62 +291,33 @@ func (h *Handler) CheckAndCreateMaintenanceTasks() {
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. 找出 (目前日期 - 最後保養日) >= 保養間隔 的設備
-	// 2. 且該設備目前沒有未解決 (is_resolved = false) 的維修/保養紀錄
-	query := `
-		SELECT e.lid 
-		FROM equipments e
-		WHERE (CURRENT_DATE - e.last_maint_date) >= e.maint_interval
-		  AND NOT EXISTS (
-			  SELECT 1 FROM maintenance_records m 
-			  WHERE m.equipment_id = e.lid AND m.is_resolved = false
-		  )`
+	// 單一集合操作 (Set-based)：僅更新確實成功新增定期保養紀錄的設備，避免覆蓋 faulty 故障狀態
+	setBasedQuery := `
+		WITH ins AS (
+			INSERT INTO maintenance_records (equipment_id, reporter_type, description, is_resolved, resolve_note)
+			SELECT e.lid, 'system', '【系統自動偵測】已達定期保養週期，請進行例行檢查。', false, ''
+			  FROM equipments e
+			 WHERE (CURRENT_DATE - e.last_maint_date) >= e.maint_interval
+			   AND e.retired_at IS NULL
+			ON CONFLICT DO NOTHING
+			RETURNING equipment_id
+		)
+		UPDATE equipments SET status = 'pending_maint'
+		 WHERE lid IN (SELECT equipment_id FROM ins)`
 
-	rows, err := tx.Query(ctx, query)
+	result, err := tx.Exec(ctx, setBasedQuery)
 	if err != nil {
-		slog.Error("自動檢查失敗：查詢設備錯誤", "err", err)
-		return
-	}
-	defer rows.Close()
-
-	var expiredEquipmentIDs []string
-	for rows.Next() {
-		var lid string
-		if err := rows.Scan(&lid); err == nil {
-			expiredEquipmentIDs = append(expiredEquipmentIDs, lid)
-		}
-	}
-
-	if len(expiredEquipmentIDs) == 0 {
-		slog.Info("自動檢查完成：沒有需要保養的設備。")
+		slog.Error("自動建立保養紀錄失敗", "err", err)
 		return
 	}
 
-	// 批量插入保養紀錄，並將設備狀態標記為 pending_maint
-	for _, equipID := range expiredEquipmentIDs {
-		insertRecordQuery := `
-			INSERT INTO maintenance_records (equipment_id, reporter_type, description, is_resolved, resolve_note, created_at)
-			VALUES ($1, 'system', '【系統自動偵測】已達定期保養週期，請進行例行檢查。', false, '', $2)
-			ON CONFLICT DO NOTHING`
-
-		_, err = tx.Exec(ctx, insertRecordQuery, equipID, time.Now())
-		if err != nil {
-			slog.Error("自動建立保養紀錄失敗", "equipment_id", equipID, "err", err)
-			return
-		}
-
-		// 更新設備狀態為 pending_maint (符合保養排程狀態語意)
-		_, err = tx.Exec(ctx, "UPDATE equipments SET status = 'pending_maint' WHERE lid = $1", equipID)
-		if err != nil {
-			slog.Error("自動更新設備狀態失敗", "equipment_id", equipID, "err", err)
-			return
-		}
-	}
+	// 順帶清理過期超過 7 天的歷史 refresh token (T6)
+	_, _ = tx.Exec(ctx, `DELETE FROM refresh_tokens WHERE expires_at < NOW() - INTERVAL '7 days'`)
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("自動檢查失敗：交易提交失敗", "err", err)
 		return
 	}
 
-	slog.Info(fmt.Sprintf("自動檢查完成，成功為 %d 台設備建立定期保養任務。", len(expiredEquipmentIDs)))
+	slog.Info(fmt.Sprintf("自動保養檢查完成，已建立定期保養任務 (異動 %d 筆設備)。", result.RowsAffected()))
 }

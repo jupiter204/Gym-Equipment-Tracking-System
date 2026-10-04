@@ -17,17 +17,45 @@ func init() {
 
 func TestInitJWT(t *testing.T) {
 	// Test short secret
+	_ = os.Setenv("APP_ENV", "development")
 	_ = os.Setenv("JWT_SECRET", "short_secret")
 	if err := InitJWT(); err == nil {
 		t.Fatal("Expected error for secret < 32 characters, got nil")
 	}
 
-	// Test valid 32-character secret
+	// Test valid 32-character secret in dev
 	validSecret := "12345678901234567890123456789012"
 	_ = os.Setenv("JWT_SECRET", validSecret)
 	if err := InitJWT(); err != nil {
 		t.Fatalf("Expected success for >= 32 characters, got %v", err)
 	}
+
+	// Test placeholder secret in development (should be allowed for convenience)
+	placeholder := "please_generate_and_change_to_a_secure_jwt_secret_with_at_least_32_bytes!"
+	_ = os.Setenv("APP_ENV", "development")
+	_ = os.Setenv("JWT_SECRET", placeholder)
+	if err := InitJWT(); err != nil {
+		t.Fatalf("Expected success for placeholder secret in development, got %v", err)
+	}
+
+	// Test placeholder secret in production (must be rejected)
+	_ = os.Setenv("APP_ENV", "production")
+	_ = os.Setenv("JWT_SECRET", placeholder)
+	if err := InitJWT(); err == nil {
+		t.Fatal("Expected error for placeholder secret in production, got nil")
+	}
+
+	// Test secure custom secret in production (must succeed)
+	_ = os.Setenv("APP_ENV", "production")
+	_ = os.Setenv("JWT_SECRET", "super_secure_random_production_secret_key_123456789")
+	if err := InitJWT(); err != nil {
+		t.Fatalf("Expected success for secure secret in production, got %v", err)
+	}
+
+	// Cleanup env
+	_ = os.Setenv("APP_ENV", "development")
+	_ = os.Setenv("JWT_SECRET", validSecret)
+	_ = InitJWT()
 }
 
 func TestAuthMiddleware(t *testing.T) {
