@@ -160,10 +160,6 @@ func (h *Handler) GetDetailEquipment(c *gin.Context) {
 		list = append(list, e)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("Iterate equipments rows failed", "err", err)
-	}
-
-	if err := rows.Err(); err != nil {
 		slog.Error("Rows iteration error", "err", err)
 		respondError(c, http.StatusInternalServerError, "Database cursor error")
 		return

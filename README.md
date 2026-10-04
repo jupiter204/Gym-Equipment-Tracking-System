@@ -99,7 +99,7 @@ BOOTSTRAP_ADMIN_PASSWORD=<至少 8 字元、至多 72 位元組的強密碼>
 ```
 
 > **生產環境安全護欄**：
-> - `APP_ENV=production` 下，若 `JWT_SECRET` 包含 `please_generate`、`change_this`、`secret_key` 或 repo 歷史範例金鑰，系統拒絕啟動。
+> - `APP_ENV=production` 下，若 `JWT_SECRET` 包含 `please_generate`、`change_this` 或 repo 歷史範例金鑰，系統拒絕啟動。
 > - `DB_PASSWORD` 若為空、為 `postgres`、包含 `change_this` 或長度小於 8 字元，系統拒絕啟動。
 
 ### 2. 配置 SSL 憑證
