@@ -46,7 +46,17 @@ apiClient.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config as CustomAxiosRequestConfig;
 
-    // 當後端回傳 401 Unauthorized 且尚未重試
+    if (!originalRequest) {
+      return Promise.reject(error);
+    }
+
+    // 排除登入與刷新認證端點，避免錯誤重試迴圈卡死
+    const url = originalRequest.url ?? '';
+    if (url.includes('/auth/login') || url.includes('/auth/refresh')) {
+      return Promise.reject(error);
+    }
+
+    // 當後端回傳 401 Unauthorized 且尚未重試過
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
         // 如果已經有其他請求正在刷新 Token，則加入排隊隊列
@@ -65,15 +75,17 @@ apiClient.interceptors.response.use(
       originalRequest._retry = true;
       isRefreshing = true;
 
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (!refreshToken) {
-        handleForceLogout();
-        return Promise.reject(error);
-      }
+      const currentRefreshToken = localStorage.getItem('refresh_token');
 
       try {
-        const res = await axios.post('/api/auth/refresh', { refresh_token: refreshToken });
-        const { access_token, refresh_token } = res.data;
+        if (!currentRefreshToken) {
+          processQueue(error, null);
+          handleForceLogout();
+          return Promise.reject(error);
+        }
+
+        const res = await axios.post('/api/auth/refresh', { refresh_token: currentRefreshToken });
+        const { access_token, refresh_token } = res.data || {};
 
         if (access_token) {
           localStorage.setItem('access_token', access_token);
@@ -88,8 +100,22 @@ apiClient.interceptors.response.use(
 
           processQueue(null, access_token);
           return apiClient(originalRequest);
+        } else {
+          throw new Error('Refresh response missing access_token');
         }
       } catch (refreshError) {
+        // 多標籤頁判斷：若其他分頁在此期間已成功刷新，則直接使用最新 access_token 重試
+        const latestRefreshToken = localStorage.getItem('refresh_token');
+        const latestAccessToken = localStorage.getItem('access_token');
+        if (latestRefreshToken && latestRefreshToken !== currentRefreshToken && latestAccessToken) {
+          apiClient.defaults.headers.common['Authorization'] = `Bearer ${latestAccessToken}`;
+          if (originalRequest.headers) {
+            originalRequest.headers.Authorization = `Bearer ${latestAccessToken}`;
+          }
+          processQueue(null, latestAccessToken);
+          return apiClient(originalRequest);
+        }
+
         processQueue(refreshError, null);
         handleForceLogout();
         return Promise.reject(refreshError);
@@ -114,14 +140,21 @@ export function handleForceLogout() {
   }
 }
 
-// 解析 Access Token 取得使用者資訊
+// 解析 Access Token 取得使用者資訊 (支援 base64url 與 UTF-8 字元)
 export function getStoredUser(): { userUUID: string; role: 'admin' | 'staff' } | null {
   const token = localStorage.getItem('access_token');
   if (!token) return null;
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
-    const payload = JSON.parse(atob(parts[1]));
+    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4 !== 0) {
+      base64 += '=';
+    }
+    const binaryStr = atob(base64);
+    const bytes = Uint8Array.from(binaryStr, (c) => c.charCodeAt(0));
+    const jsonStr = new TextDecoder().decode(bytes);
+    const payload = JSON.parse(jsonStr);
     return {
       userUUID: payload.userUUID,
       role: payload.role,
