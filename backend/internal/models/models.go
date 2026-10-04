@@ -19,15 +19,15 @@ type MessageResponse struct {
 // TokenResponse represents the tokens returned after successful login or refresh
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 // --- Auth Models ---
 
 // LoginRequest represents the data structure for user authentication
 type LoginRequest struct {
-	Username string `json:"username" binding:"required" example:"admin"`
-	Password string `json:"password" binding:"required" example:"admin"`
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
 }
 
 // RefreshRequest represents the request to refresh an access token
@@ -61,42 +61,41 @@ type EquipmentDetail struct {
 
 // CreateEquipmentRequest represents the request to add a new piece of equipment
 type CreateEquipmentRequest struct {
-	AssetCode     string `json:"asset_code" binding:"required"`
-	Name          string `json:"name" binding:"required"`
-	Category      string `json:"category"`
+	AssetCode     string `json:"asset_code" binding:"required,min=1,max=50"`
+	Name          string `json:"name" binding:"required,min=1,max=100"`
+	Category      string `json:"category" binding:"omitempty,max=50"`
 	LastMaintDate string `json:"last_maint_date"`
-	MaintInterval int    `json:"maint_interval"`
-	Location      string `json:"location"`
+	MaintInterval int    `json:"maint_interval" binding:"required,gte=1"`
+	Location      string `json:"location" binding:"omitempty,max=100"`
 }
 
 // UpdateEquipmentRequest represents the request to update equipment details
 type UpdateEquipmentRequest struct {
-	LID           string  `json:"lid" binding:"required"`
-	AssetCode     *string `json:"asset_code"`
-	Name          *string `json:"name"`
-	Category      *string `json:"category"`
-	MaintInterval *int    `json:"maint_interval"`
-	Location      *string `json:"location"`
+	LID           string  `json:"lid" binding:"required,uuid"`
+	AssetCode     *string `json:"asset_code" binding:"omitempty,min=1,max=50"`
+	Name          *string `json:"name" binding:"omitempty,min=1,max=100"`
+	Category      *string `json:"category" binding:"omitempty,max=50"`
+	MaintInterval *int    `json:"maint_interval" binding:"omitempty,gte=1"`
+	Location      *string `json:"location" binding:"omitempty,max=100"`
 }
 
 // DeleteEquipmentRequest represents the request to remove equipment
 type DeleteEquipmentRequest struct {
-	LID string `json:"lid" binding:"required"`
+	LID string `json:"lid" binding:"required,uuid"`
 }
 
 // --- Maintenance Models ---
 
-// MaintenanceRequest represents a new maintenance report from a user
+// MaintenanceRequest represents a new maintenance report from a user (public endpoint)
 type MaintenanceRequest struct {
-	EquipmentID  string `json:"equipment_id" binding:"required"`
-	ReporterType string `json:"reporter_type" binding:"required"`
-	Description  string `json:"description" binding:"required"`
+	EquipmentID string `json:"equipment_id" binding:"required,uuid"`
+	Description string `json:"description" binding:"required,min=1,max=500"`
 }
 
 // ResolveMaintenanceRequest represents the request to mark a record as resolved
 type ResolveMaintenanceRequest struct {
-	LID         string `json:"lid" binding:"required"` // 維修紀錄列表的lid
-	ResolveNote string `json:"resolve_note" binding:"required"`
+	LID         string `json:"lid" binding:"required,uuid"`
+	ResolveNote string `json:"resolve_note" binding:"required,min=1,max=500"`
 }
 
 // MaintenanceRecord represents a record in the maintenance history
@@ -105,7 +104,7 @@ type MaintenanceRecord struct {
 	EquipmentID   string    `json:"equipment_id"`
 	EquipmentName string    `json:"equipment_name"`
 	AssetCode     string    `json:"asset_code"`
-	ReporterType  string    `json:"reporter_type"`
+	ReporterType  string    `json:"reporter_type"` // 'public', 'staff', 'system'
 	Description   string    `json:"description"`
 	IsResolved    bool      `json:"is_resolved"`
 	ResolveNote   string    `json:"resolve_note"`
@@ -116,23 +115,23 @@ type MaintenanceRecord struct {
 
 // CreateUserRequest represents the request to add a new user
 type CreateUserRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
-	Name     string `json:"name" binding:"required"`
-	Role     string `json:"role" binding:"required"` // 'admin' or 'staff'
+	Username string `json:"username" binding:"required,min=3,max=32"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
+	Name     string `json:"name" binding:"required,min=1,max=64"`
+	Role     string `json:"role" binding:"required,oneof=admin staff"`
 }
 
 // UpdateUserRequest represents the request to update user details
 type UpdateUserRequest struct {
-	LID      string  `json:"lid" binding:"required"`
-	Password *string `json:"password"`
-	Name     *string `json:"name"`
-	Role     *string `json:"role"`
+	LID      string  `json:"lid" binding:"required,uuid"`
+	Password *string `json:"password" binding:"omitempty,min=8,max=72"`
+	Name     *string `json:"name" binding:"omitempty,min=1,max=64"`
+	Role     *string `json:"role" binding:"omitempty,oneof=admin staff"`
 }
 
 // DeleteUserRequest represents the request to remove a user
 type DeleteUserRequest struct {
-	LID string `json:"lid" binding:"required"`
+	LID string `json:"lid" binding:"required,uuid"`
 }
 
 // UserResponse represents the user data returned to the client

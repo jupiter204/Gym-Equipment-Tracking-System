@@ -3,83 +3,94 @@ import apiClient from '../../services/apiClient';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Download, Loader2 } from 'lucide-react';
-// 引入圖表工具
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   LineChart, Line
 } from 'recharts';
+import type { Equipment, MaintenanceRecord } from '../../types';
+
+interface MonthTrend {
+  name: string;
+  faults: number;
+  maintenance: number;
+}
+
+interface CategoryStat {
+  name: string;
+  count: number;
+}
 
 const Analytics: React.FC = () => {
   const [loading, setLoading] = useState(true);
-  const [monthData, setMonthData] = useState<any[]>([]);
-  const [categoryData, setCategoryData] = useState<any[]>([]);
-  const [rawData, setRawData] = useState<any[]>([]);
+  const [monthData, setMonthData] = useState<MonthTrend[]>([]);
+  const [categoryData, setCategoryData] = useState<CategoryStat[]>([]);
+  const [rawData, setRawData] = useState<MaintenanceRecord[]>([]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         const [eqRes, maintRes] = await Promise.all([
           apiClient.get('/private/equipments'),
-          apiClient.get('/private/maintenance-records')
+          apiClient.get('/private/maintenance-records'),
         ]);
-        
-        const equipments = eqRes.data || [];
-        const records = maintRes.data || [];
+
+        const equipments: Equipment[] = eqRes.data || [];
+        const records: MaintenanceRecord[] = maintRes.data || [];
         setRawData(records);
 
-        // 1. 計算各分類的維修次數 (根據維修紀錄對應設備)
-        // 建立設備 ID 到分類的對應表
+        // 1. 計算各分類的維修次數
         const eqCategoryMap: Record<string, string> = {};
-        equipments.forEach((eq: any) => {
-           eqCategoryMap[eq.lid || eq.id] = eq.category || '未分類';
+        equipments.forEach((eq) => {
+          eqCategoryMap[eq.lid] = eq.category || '未分類';
         });
 
         const catMap: Record<string, number> = {};
-        records.forEach((r: any) => {
-           const cat = eqCategoryMap[r.equipment_id] || '未知分類';
-           catMap[cat] = (catMap[cat] || 0) + 1;
+        records.forEach((r) => {
+          const cat = eqCategoryMap[r.equipment_id] || '未知分類';
+          catMap[cat] = (catMap[cat] || 0) + 1;
         });
 
-        const computedCategory = Object.keys(catMap).map(k => ({ name: k, count: catMap[k] }));
+        const computedCategory = Object.keys(catMap).map((k) => ({ name: k, count: catMap[k] }));
         if (computedCategory.length === 0) {
-           computedCategory.push({ name: '無故障紀錄', count: 0 });
+          computedCategory.push({ name: '無故障紀錄', count: 0 });
         }
         setCategoryData(computedCategory);
 
         // 2. 計算近六個月的通報與保養趨勢
-        const months = Array.from({length: 6}).map((_, i) => {
-           const d = new Date();
-           d.setMonth(d.getMonth() - (5 - i));
-           return {
-             monthKey: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, '0')}`,
-             label: `${d.getMonth()+1}月`,
-             faults: 0,
-             maintenance: 0
-           };
+        const months = Array.from({ length: 6 }).map((_, i) => {
+          const d = new Date();
+          d.setMonth(d.getMonth() - (5 - i));
+          return {
+            monthKey: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+            label: `${d.getMonth() + 1}月`,
+            faults: 0,
+            maintenance: 0,
+          };
         });
 
-        records.forEach((r: any) => {
-           const d = new Date(r.created_at);
-           const mKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, '0')}`;
-           const monthObj = months.find(m => m.monthKey === mKey);
-           if (monthObj) {
-              if (r.is_resolved) {
-                monthObj.maintenance += 1;
-              } else {
-                monthObj.faults += 1;
-              }
-           }
+        records.forEach((r) => {
+          const d = new Date(r.created_at);
+          const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          const monthObj = months.find((m) => m.monthKey === mKey);
+          if (monthObj) {
+            if (r.is_resolved) {
+              monthObj.maintenance += 1;
+            } else {
+              monthObj.faults += 1;
+            }
+          }
         });
 
-        setMonthData(months.map(m => ({ name: m.label, faults: m.faults, maintenance: m.maintenance })));
-
-      } catch (err) {
-        console.error('獲取分析數據失敗', err);
+        setMonthData(
+          months.map((m) => ({ name: m.label, faults: m.faults, maintenance: m.maintenance }))
+        );
+      } catch {
+        // Silently handled
       } finally {
         setLoading(false);
       }
     };
-    
+
     fetchData();
   }, []);
 
@@ -88,47 +99,44 @@ const Analytics: React.FC = () => {
       alert('沒有資料可匯出');
       return;
     }
-    
-    // 定義 CSV 標頭
+
     const headers = ['通報單號', '設備名稱', '資產編號', '回報者類型', '問題描述', '處理狀態', '處理備註', '通報時間'];
     
-    // 轉換成 CSV 字串 (處理包含逗號的字串)
     const csvContent = [
       headers.join(','),
-      ...rawData.map(r => [
+      ...rawData.map((r) => [
         r.lid,
         `"${(r.equipment_name || '').replace(/"/g, '""')}"`,
         `"${(r.asset_code || '').replace(/"/g, '""')}"`,
-        r.reporter_type === 'public' ? '民眾' : '員工',
+        r.reporter_type === 'public' ? '民眾' : r.reporter_type === 'system' ? '系統' : '員工',
         `"${(r.description || '').replace(/"/g, '""')}"`,
         r.is_resolved ? '已解決' : '未解決',
         `"${(r.resolve_note || '').replace(/"/g, '""')}"`,
-        new Date(r.created_at).toLocaleString()
-      ].join(','))
+        new Date(r.created_at).toLocaleString(),
+      ].join(',')),
     ].join('\n');
 
-    // 觸發下載 (加入 BOM 解決 Excel 中文亂碼)
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `維修紀錄報表_${new Date().getTime()}.csv`);
+    link.setAttribute('download', `維修紀錄報表_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   if (loading) {
-     return (
-       <div className="flex h-[50vh] items-center justify-center text-muted-foreground">
-         <Loader2 className="w-8 h-8 animate-spin text-primary" />
-       </div>
-     );
+    return (
+      <div className="flex h-[50vh] items-center justify-center text-muted-foreground">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6">
-      {/* 標題與匯出按鈕區塊 */}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">數據分析中心</h1>
@@ -139,10 +147,7 @@ const Analytics: React.FC = () => {
         </Button>
       </div>
 
-      {/* 圖表展示區塊 */}
       <div className="grid gap-6 md:grid-cols-2">
-        
-        {/* 折線圖 */}
         <Card>
           <CardHeader>
             <CardTitle>近六個月維修與保養趨勢</CardTitle>
@@ -163,7 +168,6 @@ const Analytics: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* 長條圖 */}
         <Card>
           <CardHeader>
             <CardTitle>各分類歷史故障次數統計</CardTitle>
@@ -183,7 +187,6 @@ const Analytics: React.FC = () => {
             </ResponsiveContainer>
           </CardContent>
         </Card>
-        
       </div>
     </div>
   );

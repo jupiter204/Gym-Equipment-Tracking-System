@@ -1,4 +1,8 @@
-import axios from 'axios';
+import axios, { type AxiosRequestConfig } from 'axios';
+
+interface CustomAxiosRequestConfig extends AxiosRequestConfig {
+  _retry?: boolean;
+}
 
 const apiClient = axios.create({
   baseURL: '/api',
@@ -7,7 +11,7 @@ const apiClient = axios.create({
   },
 });
 
-// 1. 請求攔截器 (Request Interceptor) - 保持不變
+// 1. 請求攔截器 (Request Interceptor)
 apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('access_token');
@@ -19,40 +23,78 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// 2. 💡 新增：回應攔截器 (Response Interceptor) - 專治 Token 過期
-apiClient.interceptors.response.use(
-  (response) => response, // 正常回應直接放行
-  async (error) => {
-    const originalRequest = error.config;
+// 2. 回應攔截器 (Response Interceptor) - 具備並行請求排隊機制的 Token 刷新
+let isRefreshing = false;
+let failedQueue: Array<{
+  resolve: (token: string) => void;
+  reject: (err: unknown) => void;
+}> = [];
 
-    // 當後端回傳 401 Unauthorized，且該請求還沒有重試過
+const processQueue = (error: unknown, token: string | null = null) => {
+  failedQueue.forEach((prom) => {
+    if (error) {
+      prom.reject(error);
+    } else if (token) {
+      prom.resolve(token);
+    }
+  });
+  failedQueue = [];
+};
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config as CustomAxiosRequestConfig;
+
+    // 當後端回傳 401 Unauthorized 且尚未重試
     if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true; // 標記此請求已重試，避免無限迴圈
-      
+      if (isRefreshing) {
+        // 如果已經有其他請求正在刷新 Token，則加入排隊隊列
+        return new Promise<string>((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then((token) => {
+            if (originalRequest.headers) {
+              originalRequest.headers.Authorization = `Bearer ${token}`;
+            }
+            return apiClient(originalRequest);
+          })
+          .catch((err) => Promise.reject(err));
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
       const refreshToken = localStorage.getItem('refresh_token');
       if (!refreshToken) {
-        // 連 refresh_token 都沒有，直接登出
         handleForceLogout();
         return Promise.reject(error);
       }
 
       try {
-        // 嘗試向後端發送無痛刷新請求 (注意：此處需使用原生 axios，避免引發原本 apiClient 的攔截迴圈)
         const res = await axios.post('/api/auth/refresh', { refresh_token: refreshToken });
-        const newAccessToken = res.data.access_token;
+        const { access_token, refresh_token } = res.data;
 
-        if (newAccessToken) {
-          // 儲存新的 access_token
-          localStorage.setItem('access_token', newAccessToken);
-          
-          // 更新本次失敗請求的 Header，並重新發送
-          originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+        if (access_token) {
+          localStorage.setItem('access_token', access_token);
+          if (refresh_token) {
+            localStorage.setItem('refresh_token', refresh_token);
+          }
+
+          apiClient.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
+          if (originalRequest.headers) {
+            originalRequest.headers.Authorization = `Bearer ${access_token}`;
+          }
+
+          processQueue(null, access_token);
           return apiClient(originalRequest);
         }
       } catch (refreshError) {
-        // 刷新失敗（代表 refresh_token 也過期或失效了）
+        processQueue(refreshError, null);
         handleForceLogout();
         return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
       }
     }
 
@@ -60,14 +102,33 @@ apiClient.interceptors.response.use(
   }
 );
 
-// 強制安全登出清空狀態的輔助函式
-function handleForceLogout() {
+// 強制登出輔助函式
+export function handleForceLogout() {
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
   if (apiClient.defaults.headers.common['Authorization']) {
     delete apiClient.defaults.headers.common['Authorization'];
   }
-  window.location.href = '/login?expired=true'; // 跳回登入頁，並可選提示使用者工作階段過期
+  if (window.location.pathname.startsWith('/admin')) {
+    window.location.href = '/login?expired=true';
+  }
+}
+
+// 解析 Access Token 取得使用者資訊
+export function getStoredUser(): { userUUID: string; role: 'admin' | 'staff' } | null {
+  const token = localStorage.getItem('access_token');
+  if (!token) return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    return {
+      userUUID: payload.userUUID,
+      role: payload.role,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export default apiClient;

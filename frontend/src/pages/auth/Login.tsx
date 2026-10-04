@@ -1,53 +1,65 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
+import axios from 'axios';
 import { Button } from '../../components/ui/Button';
-import { Activity } from 'lucide-react';
+import { Activity, AlertCircle, Loader2 } from 'lucide-react';
 import apiClient from '../../services/apiClient';
 
 const Login: React.FC = () => {
-  // 用來切換網址的工具
   const navigate = useNavigate();
+  const location = useLocation();
 
-  // 用來儲存使用者輸入的內容 (useState)
-  const [username, setUsername] = useState(''); // 帳號
-  const [password, setPassword] = useState(''); // 密碼
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  // 當使用者按下「登入系統」按鈕時會觸發這個函式
+  // Check if redirected due to expired session
+  const queryParams = new URLSearchParams(location.search);
+  const isExpired = queryParams.get('expired') === 'true';
+
   const handleLogin = async (e: React.FormEvent) => {
-    // 防止網頁因為送出表單而重新整理
     e.preventDefault();
+    setErrorMessage('');
 
-    if (username !== '' && password !== '') {
-      try {
-        console.log('正在嘗試登入...');
-        
-        // 向 Go 後端發送真實的登入請求
-        const response = await apiClient.post('/auth/login', {
-          username: username,
-          password: password
-        });
+    if (!username.trim() || !password) {
+      setErrorMessage('請輸入帳號與密碼');
+      return;
+    }
 
-        // 將取得的 Token 存進瀏覽器的 localStorage
-        localStorage.setItem('access_token', response.data.access_token);
-        if (response.data.refresh_token) {
-          localStorage.setItem('refresh_token', response.data.refresh_token);
-        }
+    setIsLoading(true);
+    try {
+      const response = await apiClient.post('/auth/login', {
+        username: username.trim(),
+        password: password,
+      });
 
-        // 成功後跳轉到管理後台首頁
-        navigate('/admin');
-      } catch (err: any) {
-        console.error('登入失敗:', err);
-        alert('登入失敗，請確認帳號密碼是否正確！');
+      localStorage.setItem('access_token', response.data.access_token);
+      if (response.data.refresh_token) {
+        localStorage.setItem('refresh_token', response.data.refresh_token);
       }
-    } else {
-      alert('請輸入帳號和密碼喔！');
+
+      navigate('/admin');
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        if (err.response?.status === 401) {
+          setErrorMessage('帳號或密碼錯誤，請重新確認！');
+        } else if (err.response?.status === 429) {
+          setErrorMessage('登入嘗試次數過多，已被限流保護，請於數分鐘後再試。');
+        } else {
+          setErrorMessage(err.response?.data?.error || '伺服器錯誤，請稍後再試。');
+        }
+      } else {
+        setErrorMessage('連線發生問題，請檢查網路狀態。');
+      }
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-sm">
-        
         {/* 標題與標誌區塊 */}
         <div className="flex flex-col items-center mb-8">
           <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4">
@@ -59,39 +71,51 @@ const Login: React.FC = () => {
 
         {/* 登入輸入框區塊 */}
         <div className="bg-card border border-border rounded-xl shadow-lg p-6">
+          {isExpired && (
+            <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-md text-amber-500 text-sm flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>工作階段已過期，請重新登入。</span>
+            </div>
+          )}
+
+          {errorMessage && (
+            <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md text-destructive text-sm flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
           <form onSubmit={handleLogin} className="space-y-4">
-            
-            {/* 帳號欄位 */}
             <div>
               <label className="block text-sm font-medium mb-1.5">帳號</label>
               <input
                 type="text"
                 required
-                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring text-foreground"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)} // 把輸入的東西存進 username 變數
+                onChange={(e) => setUsername(e.target.value)}
                 placeholder="請輸入帳號"
+                disabled={isLoading}
               />
             </div>
 
-            {/* 密碼欄位 */}
             <div>
               <label className="block text-sm font-medium mb-1.5">密碼</label>
               <input
                 type="password"
                 required
-                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring"
+                className="w-full bg-input border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring text-foreground"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)} // 把輸入的東西存進 password 變數
+                onChange={(e) => setPassword(e.target.value)}
                 placeholder="請輸入密碼"
+                disabled={isLoading}
               />
             </div>
 
-            {/* 送出按鈕 */}
-            <Button type="submit" className="w-full mt-4">
+            <Button type="submit" className="w-full mt-4" disabled={isLoading}>
+              {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               登入系統
             </Button>
-
           </form>
         </div>
       </div>

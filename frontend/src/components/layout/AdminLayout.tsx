@@ -1,17 +1,25 @@
 import React from 'react';
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { Activity, Dumbbell, ClipboardList, BarChart3, Users, LogOut } from 'lucide-react';
+import apiClient, { getStoredUser } from '../../services/apiClient';
 
 const AdminLayout: React.FC = () => {
-  // 用來跳轉網頁的工具
   const navigate = useNavigate();
+  const currentUser = getStoredUser();
 
-  // 登出功能：清除 token 並跳回登入頁面
-  const handleLogout = () => {
-    console.log('正在登出系統...');
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    navigate('/login');
+  const handleLogout = async () => {
+    const refreshToken = localStorage.getItem('refresh_token');
+    try {
+      if (refreshToken) {
+        await apiClient.post('/auth/logout', { refresh_token: refreshToken });
+      }
+    } catch {
+      // Ignore logout request errors
+    } finally {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      navigate('/login');
+    }
   };
 
   return (
@@ -46,18 +54,20 @@ const AdminLayout: React.FC = () => {
             <BarChart3 className="w-5 h-5 text-muted-foreground" />
             <span>數據分析</span>
           </Link>
-          {/* 人員管理連結 */}
-          <Link to="/admin/users" className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-secondary transition-colors">
-            <Users className="w-5 h-5 text-muted-foreground" />
-            <span>人員管理</span>
-          </Link>
+          {/* 人員管理連結 - 僅限管理員顯示 */}
+          {currentUser?.role === 'admin' && (
+            <Link to="/admin/users" className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-secondary transition-colors">
+              <Users className="w-5 h-5 text-muted-foreground" />
+              <span>人員管理</span>
+            </Link>
+          )}
         </nav>
 
         {/* 底部登出按鈕 */}
         <div className="p-4 border-t border-border">
           <button 
             onClick={handleLogout}
-            className="flex items-center gap-3 px-3 py-2 w-full text-left rounded-md hover:bg-destructive/10 text-destructive transition-colors"
+            className="flex items-center gap-3 px-3 py-2 w-full text-left rounded-md hover:bg-destructive/10 text-destructive transition-colors cursor-pointer"
           >
             <LogOut className="w-5 h-5" />
             <span>登出系統</span>
@@ -65,7 +75,7 @@ const AdminLayout: React.FC = () => {
         </div>
       </aside>
 
-      {/* 右側主要內容區：這裡會顯示各個子頁面的內容 */}
+      {/* 右側主要內容區 */}
       <main className="flex-1 overflow-auto bg-background p-8">
         <Outlet />
       </main>

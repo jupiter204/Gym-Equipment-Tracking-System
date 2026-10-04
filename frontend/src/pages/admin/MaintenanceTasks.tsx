@@ -1,62 +1,67 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
 import apiClient from '../../services/apiClient';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
-import { Wrench, Check, AlertTriangle } from 'lucide-react';
+import { Wrench, Check, AlertTriangle, Clock } from 'lucide-react';
+import type { MaintenanceRecord } from '../../types';
 
 const MaintenanceTasks: React.FC = () => {
-  // 儲存待處理任務清單的狀態
-  const [tasks, setTasks] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true); // 是否載入中
+  const [tasks, setTasks] = useState<MaintenanceRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
 
-  // 當頁面打開時，執行抓取任務的函式
+  const fetchTasks = async () => {
+    setLoading(true);
+    try {
+      const res = await apiClient.get('/private/maintenance-records?resolved=false');
+      setTasks(res.data || []);
+    } catch {
+      // Handled silently or empty state
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchTasks();
   }, []);
 
-  // 向api要求"待處理維修任務"的函式
-  const fetchTasks = async () => {
-    setLoading(true); // 開始轉圈圈
-    try {
-      // 1. 在網址加上 resolved=false 參數，請後端直接過濾
-      const res = await apiClient.get('/private/maintenance-records?resolved=false');
-      
-      // 2. 由於後端已經精準過濾，直接將資料存入 state，避免不必要的前端 filter
-      setTasks(res.data || []);
-    } catch (error) {
-      console.error('無法取得維修任務清單:', error);
-    } finally {
-      setLoading(false); // 停止轉圈圈
-    }
-  };
-
-  // 當點擊「標記為已解決」按鈕時
   const handleResolve = async (lid: string) => {
+    setResolvingId(lid);
     try {
-      console.log('正在將任務 ID', lid, '標記為已解決...');
       await apiClient.patch('/private/maintenance-records/resolve', {
         lid,
-        resolve_note: '已完成修復'
+        resolve_note: '已完成修復與例行檢驗',
       });
-      alert('任務已成功解決！');
-      fetchTasks(); // 重新整理清單，把解決掉的任務移出畫面
-    } catch (error) {
-      console.error('解決任務失敗:', error);
-      alert('標記失敗，請稍後再試！');
+      fetchTasks();
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        if (error.response?.status === 409) {
+          alert('該任務已完成解決，畫面將自動更新。');
+          fetchTasks();
+        } else {
+          alert(error.response?.data?.error || '標記失敗，請稍後再試！');
+        }
+      } else {
+        alert('標記失敗，請檢查網路連線。');
+      }
+    } finally {
+      setResolvingId(null);
     }
   };
 
-  // 載入畫面
-  if (loading) return <div className="text-muted-foreground p-8">正在努力載入任務清單...</div>;
+  if (loading) {
+    return <div className="text-muted-foreground p-8">正在努力載入任務清單...</div>;
+  }
 
   return (
     <div className="space-y-6">
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-          <Wrench className="w-8 h-8 text-primary" />
-          待處理的維修任務
-        </h1>
+      <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
+        <Wrench className="w-8 h-8 text-primary" />
+        待處理的維修任務
+      </h1>
 
-      {/* 如果沒有任務時顯示的畫面 */}
       {tasks.length === 0 ? (
         <Card className="border-dashed bg-secondary/50">
           <CardContent className="flex flex-col items-center justify-center p-12 text-center">
@@ -66,47 +71,67 @@ const MaintenanceTasks: React.FC = () => {
           </CardContent>
         </Card>
       ) : (
-        /* 有任務時，循環顯示每一個任務卡片 */
         <div className="grid gap-4">
-          {tasks.map(task => (
-            <Card key={task.lid || task.id} className="border-destructive/30 relative overflow-hidden">
-              {/* 卡片左側的紅色條，表示緊急或重要 */}
-              <div className="absolute top-0 left-0 w-1 h-full bg-destructive"></div>
-              <CardContent className="p-6">
-                <div className="flex flex-col md:flex-row justify-between gap-6">
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="w-5 h-5 text-destructive" />
-                      <h3 className="font-semibold text-lg">故障通報單 - 器材: {task.equipment_name || task.asset_code}</h3>
+          {tasks.map((task) => {
+            const isSystemMaint = task.reporter_type === 'system' || task.description.includes('【系統自動偵測】');
+
+            return (
+              <Card
+                key={task.lid}
+                className={
+                  isSystemMaint
+                    ? 'border-amber-500/30 relative overflow-hidden'
+                    : 'border-destructive/30 relative overflow-hidden'
+                }
+              >
+                <div
+                  className={`absolute top-0 left-0 w-1.5 h-full ${
+                    isSystemMaint ? 'bg-amber-500' : 'bg-destructive'
+                  }`}
+                />
+                <CardContent className="p-6">
+                  <div className="flex flex-col md:flex-row justify-between gap-6">
+                    <div className="flex-1 space-y-2">
+                      <div className="flex items-center gap-2">
+                        {isSystemMaint ? (
+                          <Clock className="w-5 h-5 text-amber-500" />
+                        ) : (
+                          <AlertTriangle className="w-5 h-5 text-destructive" />
+                        )}
+                        <h3 className="font-semibold text-lg">
+                          {isSystemMaint ? '定期保養單' : '故障通報單'} - 器材: {task.equipment_name || task.asset_code}
+                        </h3>
+                      </div>
+                      <p className="text-muted-foreground bg-secondary/50 p-3 rounded-md">
+                        問題描述：{task.description}
+                      </p>
+                      <div className="text-sm text-muted-foreground flex flex-wrap gap-4">
+                        <span>通報時間: {new Date(task.created_at).toLocaleString()}</span>
+                        <span>
+                          通報人身分:{' '}
+                          {task.reporter_type === 'system'
+                            ? '系統自動排程'
+                            : task.reporter_type === 'public'
+                            ? '一般民眾'
+                            : '健身房專員'}
+                        </span>
+                      </div>
                     </div>
-                    {/* 故障描述框 */}
-                    <p className="text-muted-foreground bg-secondary/50 p-3 rounded-md">
-                      問題描述： {task.description}
-                    </p>
-                    {/* 任務詳細時間與來源 */}
-                    <div className="text-sm text-muted-foreground flex gap-4">
-                      <span>通報時間: {new Date(task.created_at).toLocaleString()}</span>
-                      <span>
-                        通報人身分: {
-                          task.description.includes('【系統自動偵測】') ? '系統定期保養' :
-                          task.reporter_type === 'public' ? '一般民眾' : '健身房員工'
-                        }
-                      </span>
+                    <div className="flex items-end">
+                      <Button
+                        onClick={() => handleResolve(task.lid)}
+                        disabled={resolvingId === task.lid}
+                        className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2"
+                      >
+                        <Check className="w-4 h-4" />
+                        {resolvingId === task.lid ? '處理中...' : '標記完成修復'}
+                      </Button>
                     </div>
                   </div>
-                  {/* 按鈕區 */}
-                  <div className="flex items-end">
-                    <Button 
-                      onClick={() => handleResolve(task.lid || task.id)}
-                      className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2"
-                    >
-                      <Check className="w-4 h-4" /> 點我解決此任務
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

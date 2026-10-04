@@ -2,4 +2,3 @@
 ssl/
 .DS_Store
 postgres_data
-*.sql

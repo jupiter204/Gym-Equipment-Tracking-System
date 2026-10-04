@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,12 +14,19 @@ import (
 
 var jwtKey []byte
 
-func init() {
+// InitJWT initializes the JWT key from environment and validates its strength.
+func InitJWT() error {
 	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "default_secret_key_for_development"
+	if len(secret) < 32 {
+		return errors.New("JWT_SECRET 未設定或長度不足 32 字元")
 	}
 	jwtKey = []byte(secret)
+	return nil
+}
+
+// SetJWTKey sets the JWT signing key (primarily used in tests)
+func SetJWTKey(key []byte) {
+	jwtKey = key
 }
 
 // GetJWTKey returns the current JWT signing key
@@ -49,7 +57,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return jwtKey, nil
-		})
+		}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
@@ -64,9 +72,31 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// Verify token type is specifically an access token
+		tokenType, ok := claims["type"].(string)
+		if !ok || tokenType != "access" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token type, access token required"})
+			c.Abort()
+			return
+		}
+
+		userUUID, ok := claims["userUUID"].(string)
+		if !ok || userUUID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing userUUID claim"})
+			c.Abort()
+			return
+		}
+
+		role, ok := claims["role"].(string)
+		if !ok || role == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing role claim"})
+			c.Abort()
+			return
+		}
+
 		// Inject user info into context for downstream handlers
-		c.Set("userUUID", claims["userUUID"])
-		c.Set("role", claims["role"])
+		c.Set("userUUID", userUUID)
+		c.Set("role", role)
 
 		c.Next()
 	}

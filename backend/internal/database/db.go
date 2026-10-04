@@ -2,9 +2,10 @@ package database
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,15 +16,43 @@ func InitDB() *pgxpool.Pool {
 	dbPass := os.Getenv("DB_PASSWORD")
 	dbName := os.Getenv("DB_NAME")
 	dbHost := os.Getenv("DB_HOST")
+	dbPort := os.Getenv("DB_PORT")
+	sslMode := os.Getenv("DB_SSLMODE")
 
 	if dbHost == "" {
-		dbHost = "db" // Default to 'db' for docker-compose environment
+		dbHost = "db"
+	}
+	if dbPort == "" {
+		dbPort = "5432"
+	}
+	if sslMode == "" {
+		sslMode = "disable"
 	}
 
-	connString := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable", dbUser, dbPass, dbHost, dbName)
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(dbUser, dbPass),
+		Host:   dbHost + ":" + dbPort,
+		Path:   dbName,
+	}
+	q := u.Query()
+	q.Set("sslmode", sslMode)
+	u.RawQuery = q.Encode()
+
+	poolConfig, err := pgxpool.ParseConfig(u.String())
+	if err != nil {
+		slog.Error("無法解析資料庫連線字串", "err", err)
+		os.Exit(1)
+	}
+
+	// Set connection pool parameters
+	poolConfig.MaxConns = 25
+	poolConfig.MinConns = 5
+	poolConfig.MaxConnLifetime = time.Hour
+	poolConfig.MaxConnIdleTime = 15 * time.Minute
 
 	// Create connection pool
-	pool, err := pgxpool.New(context.Background(), connString)
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		slog.Error("無法建立資料庫連線池", "err", err)
 		os.Exit(1)
