@@ -1,0 +1,25 @@
+# Production Override Compose Configuration
+# Usage:
+#   podman compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+
+services:
+  frontend:
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes: !override
+      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+
+  backend:
+    environment:
+      - APP_ENV=production
+      - JWT_SECRET=${JWT_SECRET:?請在 .env 設定 JWT_SECRET}
+      - DB_PASSWORD=${DB_PASSWORD:?請在 .env 設定 DB_PASSWORD}
+
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?請在 .env 設定 DB_PASSWORD}
+    volumes: !override
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
