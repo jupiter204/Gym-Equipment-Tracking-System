@@ -52,16 +52,29 @@ apiClient.interceptors.response.use(
 
     // 排除登入與刷新認證端點，避免錯誤重試迴圈卡死
     const url = originalRequest.url ?? '';
-    if (url.includes('/auth/login') || url.includes('/auth/refresh')) {
+    if (url.includes('auth/login') || url.includes('auth/refresh')) {
       return Promise.reject(error);
     }
 
     // 當後端回傳 401 Unauthorized 且尚未重試過
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
-        // 如果已經有其他請求正在刷新 Token，則加入排隊隊列
+        // 如果已經有其他請求正在刷新 Token，則加入排隊隊列 (附帶 10 秒安全超時防護避免掛起)
         return new Promise<string>((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
+          const timer = setTimeout(() => {
+            reject(new Error('Token refresh timeout'));
+          }, 10000);
+
+          failedQueue.push({
+            resolve: (token: string) => {
+              clearTimeout(timer);
+              resolve(token);
+            },
+            reject: (err: unknown) => {
+              clearTimeout(timer);
+              reject(err);
+            },
+          });
         })
           .then((token) => {
             if (originalRequest.headers) {
@@ -130,6 +143,8 @@ apiClient.interceptors.response.use(
 
 // 強制登出輔助函式
 export function handleForceLogout() {
+  isRefreshing = false;
+  failedQueue = [];
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
   if (apiClient.defaults.headers.common['Authorization']) {

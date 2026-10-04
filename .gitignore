@@ -2,3 +2,4 @@
 ssl/
 .DS_Store
 postgres_data
+*.har

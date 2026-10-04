@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { Button } from '../../components/ui/Button';
 import { Activity, AlertCircle, Loader2 } from 'lucide-react';
-import apiClient from '../../services/apiClient';
+import apiClient, { handleForceLogout } from '../../services/apiClient';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
@@ -17,6 +17,10 @@ const Login: React.FC = () => {
   // Check if redirected due to expired session
   const queryParams = new URLSearchParams(location.search);
   const isExpired = queryParams.get('expired') === 'true';
+
+  useEffect(() => {
+    handleForceLogout();
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
