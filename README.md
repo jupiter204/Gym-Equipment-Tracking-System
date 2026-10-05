@@ -1,17 +1,19 @@
-# GETS 健身設備管理維護系統 (Gym Equipment Tracking System)
+# GETS — Gym Equipment Tracking System
+> 健身設備管理維護系統
 
-GETS 是一套專為健身房、運動中心設計的設備管理與預防性維護系統。提供設備履歷盤點、維護保養排程追蹤、營運數據分析與權限分級管理。
+GETS 是一套專為**健身房、運動中心**設計的全端設備管理系統，提供設備履歷盤點、預防性維護排程、多角色權限管控與營運數據儀表板。
 
 ---
 
 ## 目錄
 
 - [系統架構](#系統架構)
+- [功能概覽](#功能概覽)
 - [快速上手（開發環境）](#快速上手開發環境)
 - [生產環境部署指南](#生產環境部署指南)
-- [Cloudflare SSL / TLS 設定與憑證配置](#cloudflare-ssl--tls-設定與憑證配置)
-- [執行整合測試 (Integration Tests)](#執行整合測試-integration-tests)
-- [版本升級指南 (從 Beta-1.2 升級)](#版本升級指南-從-beta-12-升級)
+- [Cloudflare SSL / TLS 設定](#cloudflare-ssl--tls-設定)
+- [執行整合測試](#執行整合測試)
+- [版本升級指南（從 Beta-1.2 升級）](#版本升級指南從-beta-12-升級)
 - [安全性功能架構](#安全性功能架構)
 - [已知限制與未來展望](#已知限制與未來展望)
 
@@ -19,312 +21,359 @@ GETS 是一套專為健身房、運動中心設計的設備管理與預防性維
 
 ## 系統架構
 
-- **前端 (Frontend)**: React 19 + TypeScript + Vite + Tailwind CSS + Lucide Icons
-- **後端 (Backend)**: Go (Golang 1.25+) RESTful API + Gin + JWT (HS256) + Swagger (swag)
-- **資料庫 (Database)**: PostgreSQL 15/16 (含 UUID 支援、交易鎖定機制、部分索引)
-- **反向代理 (Reverse Proxy)**: Nginx (支援 Rate Limiting、Cloudflare Real IP、SSL/TLS 終結)
-- **容器化 (Containerization)**: 支援 Docker (Docker Compose ≥ 2.24.4) / Podman (需 docker-compose ≥ 2.24.4 或 podman-compose ≥ 1.4.0)
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Client (Browser / PWA)               │
+└───────────────────────┬─────────────────────────────────┘
+                        │ HTTPS
+┌───────────────────────▼─────────────────────────────────┐
+│               Nginx (Reverse Proxy)                      │
+│   Rate Limiting · Cloudflare Real IP · SSL/TLS 終結      │
+└──────┬────────────────────────────────┬─────────────────┘
+       │ /                              │ /api/
+┌──────▼──────┐                 ┌───────▼────────┐
+│  Frontend   │                 │    Backend     │
+│  React 19   │                 │  Go / Gin      │
+│  TypeScript │                 │  REST API      │
+│  Vite · PWA │                 │  JWT (HS256)   │
+└─────────────┘                 └───────┬────────┘
+                                        │
+                                ┌───────▼────────┐
+                                │   PostgreSQL   │
+                                │    15 / 16     │
+                                └────────────────┘
+```
+
+### 技術棧
+
+| 層級 | 技術 |
+|------|------|
+| **前端** | React 19 · TypeScript · Vite 8 · Tailwind CSS 4 · Recharts · Lucide Icons · PWA |
+| **後端** | Go 1.25 · Gin · JWT (HS256) · pgx/v5 · Swagger (swag) · cron/v3 |
+| **資料庫** | PostgreSQL 15/16（UUID · 交易鎖定 · 部分索引） |
+| **反向代理** | Nginx（Rate Limiting · Cloudflare Real IP · TLS 終結） |
+| **容器化** | Docker Compose ≥ 2.24.4 / Podman Compose ≥ 1.4.0 |
+
+---
+
+## 功能概覽
+
+| 功能模組 | 管理員 (admin) | 巡檢人員 (staff) |
+|----------|:--------------:|:----------------:|
+| 設備清單 CRUD | ✅ | 👁 唯讀 |
+| 設備掃碼公開報修 | ✅ | ✅ |
+| 維護任務排程與結案 | ✅ | ✅ 可認領 |
+| 帳號管理 | ✅ | ❌ |
+| 統計儀表板 & 分析圖表 | ✅ | ❌ |
+| Swagger API 文件 | 開發環境 | 開發環境 |
+
+### 前端頁面結構
+
+```
+src/pages/
+├── auth/
+│   └── Login.tsx               # 登入頁
+├── admin/
+│   ├── Dashboard.tsx           # 主儀表板
+│   ├── EquipmentList.tsx       # 設備管理
+│   ├── MaintenanceTasks.tsx    # 維護任務
+│   ├── Analytics.tsx           # 數據分析
+│   └── UserManagement.tsx      # 帳號管理
+└── public/
+    └── ReportEquipment.tsx     # 設備公開報修（無需登入）
+```
 
 ---
 
 ## 快速上手（開發環境）
 
-開發環境預設啟用測試資料、Swagger API 文件與本機 HTTP 代理。
+開發環境預設啟用測試種子資料、Swagger API 文件與本機 HTTP 代理。
+
+### 前置需求
+
+- Docker Compose ≥ 2.24.4 **或** Podman Compose ≥ 1.4.0
 
 ### 1. 啟動容器服務
 
-以 **Podman** 啟動：
 ```bash
+# Podman
 podman compose up -d
-```
-或以 **Docker** 啟動：
-```bash
+
+# 或 Docker
 docker compose up -d
 ```
 
-### 2. 存取系統服務
+### 2. 存取服務
 
-- **前端應用入口**：[http://localhost:8000](http://localhost:8000)
-- **Swagger API 文件**：[http://localhost:8000/swagger/index.html](http://localhost:8000/swagger/index.html)
-- **後端 API 代理**：[http://localhost:8000/api/](http://localhost:8000/api/)
-- **健康檢查**：[http://localhost:8000/healthz](http://localhost:8000/healthz)
+| 服務 | 網址 |
+|------|------|
+| 前端應用 | http://localhost:8000 |
+| Swagger API 文件 | http://localhost:8000/swagger/index.html |
+| 後端 API 代理 | http://localhost:8000/api/ |
+| 健康檢查 | http://localhost:8000/healthz |
 
-### 3. 開發環境預設帳號
+### 3. 預設測試帳號
 
-開發環境會自動掛載 `db/seed_dev.sql` 建立以下測試帳號（**僅限開發環境，正式環境不存在任何預設帳號**）：
+> **注意**：以下帳號僅存在於開發環境（由 `db/seed_dev.sql` 自動建立），**正式環境不存在任何預設帳號**。
 
-| 帳號 (Username) | 密碼 (Password) | 角色 (Role) | 說明 |
-| :--- | :--- | :--- | :--- |
-| `admin` | `admin123456` | `admin` (系統管理員) | 具備完整設備增刪查改、保養排程結案、人員帳號管理與統計儀表板權限 |
-| `staff01` | `admin123456` | `staff` (巡檢維護人員) | 具備設備檢視、巡檢回報與維護任務認領權限 |
+| 帳號 | 密碼 | 角色 | 權限說明 |
+|------|------|------|----------|
+| `admin` | `admin123456` | `admin` | 完整設備增刪查改、保養結案、帳號管理、統計儀表板 |
+| `staff01` | `admin123456` | `staff` | 設備檢視、巡檢回報、任務認領 |
 
-### 4. 執行開發環境冒煙測試
+### 4. 冒煙測試
 
-系統提供自動化冒煙測試腳本，可用於驗證容器健康狀態與 API 運作：
 ```bash
 bash scripts/smoke_dev.sh
 ```
-該腳本會執行 9 項測試，確認開發帳號登入、角色存取控制、公開報修與健康檢查皆正常。
+
+執行 9 項自動化測試，驗證開發帳號登入、角色存取控制、公開報修與健康檢查。
 
 ---
 
 ## 生產環境部署指南
 
-生產環境透過 `docker-compose.prod.yaml` 進行環境覆寫，具備以下特點：
-- **環境隔離**：強制要求安全且高強度的 `JWT_SECRET` 與 `DB_PASSWORD`，若未設定或使用預設弱密碼後端將直接中斷啟動 (Fail-closed)。
-- **安全覆寫**：透過 `volumes: !override` 取消掛載 `db/seed_dev.sql`，防止預設測試資料流入正式環境。
-- **TLS/SSL 加密**：自動導向 HTTPS (443 埠)，阻擋未加密 HTTP 流量並注入 HSTS 安全標頭。
-- **介面封閉**：在生產環境 Nginx 中將 `/swagger/*` 遮蔽為 404 Not Found。
+生產環境透過 `docker-compose.prod.yaml` 覆寫設定，具備以下安全特性：
 
-> **版本要求與 Compose Provider**：
-> - `docker-compose.prod.yaml` 使用 `!override` 語法，最低版本需求為 **Docker Compose ≥ 2.24.4** 或 **podman-compose ≥ 1.4.0**。
-> - 檢查目前版本：執行 `podman compose version`（會顯示實際使用的 compose provider 與版本；其執行檔路徑依 Linux 發行版而異）。
-> - **常見錯誤排除**：若在解析 production 設定時出現 `could not determine a constructor for the tag '!override'`，代表目前的 compose provider 版本過舊（例如某些發行版 apt 套件庫中舊版的 podman-compose 1.0.6），請升級 provider（例如透過 `pip install --user -U podman-compose` 或安裝最新版 `docker-compose-plugin`）。
->
-> **SELinux 主機注意事項**：
-> - 在啟用 SELinux Enforcing 模式的主機（如 Fedora、RHEL、Rocky Linux 等，可由 `getenforce` 確認）上，容器存取 bind mount 檔案若無正確標籤會遭遇 `Permission denied`。本專案之 compose 設定檔已標註 `:ro,Z` 標籤以自動配置私有容器安全標籤（`:Z` 會重新標記宿主檔案屬性，請勿對家目錄等全域目錄使用；在非 SELinux 環境下會被安全忽略）。
+- **Fail-Closed 啟動護欄**：弱密碼或未設定 `JWT_SECRET` / `DB_PASSWORD` 時後端直接拒絕啟動
+- **種子資料隔離**：`!override` 語法取消掛載 `db/seed_dev.sql`，防止測試資料進入正式庫
+- **強制 TLS**：HTTP → HTTPS 重導向，注入 HSTS 安全標頭
+- **封閉 Swagger**：生產環境 `/swagger/*` 一律回應 404
 
-### 1. 準備生產環境變數檔案 (`.env`)
+> **版本要求**：`!override` 語法需要 **Docker Compose ≥ 2.24.4** 或 **podman-compose ≥ 1.4.0**。
+> 若出現 `could not determine a constructor for the tag '!override'`，請升級 Compose provider：
+> ```bash
+> pip install --user -U podman-compose
+> ```
 
-在專案根目錄建立 `.env`（切勿將此檔案提交至 Git 倉庫）：
+### 1. 建立 `.env` 環境變數檔
+
+在專案根目錄建立 `.env`（**切勿提交至 Git**）：
 
 ```bash
-# 生成高強度 JWT 密鑰 (長度至少 32 字元，不可包含預設弱密碼字樣)
-# 可執行 openssl rand -hex 32 產生
-JWT_SECRET=<請執行：openssl rand -hex 32>
+# 生成高強度 JWT 密鑰（至少 32 字元）
+JWT_SECRET=$(openssl rand -hex 32)
 
-# PostgreSQL 資料庫密碼 (至少 8 字元，不可為 postgres 或包含 change_this)
-DB_PASSWORD=<請輸入高強度資料庫密碼>
+# PostgreSQL 資料庫密碼（至少 8 字元，不可為 postgres）
+DB_PASSWORD=<請輸入高強度密碼>
 
-# 自訂網域名稱 (僅供參考與記錄，Nginx 生產設定使用 server_name _)
+# 自訂網域（供記錄用）
 DOMAIN=gets.yourdomain.com
 
-# 初始管理員引導 (可選，僅在乾淨空資料庫首次啟動時設定)
+# 初始管理員引導（乾淨空資料庫首次啟動時使用，之後請移除）
 BOOTSTRAP_ADMIN_USERNAME=<管理員帳號>
-BOOTSTRAP_ADMIN_PASSWORD=<至少 8 字元、至多 72 位元組的強密碼>
+BOOTSTRAP_ADMIN_PASSWORD=<至少 8 字元的強密碼>
 ```
 
-> **生產環境安全護欄**：
-> - `APP_ENV=production` 或 `APP_ENV=prod` 下，若 `JWT_SECRET` 包含 `please_generate`、`change_this` 或 repo 歷史範例金鑰，系統拒絕啟動。
-> - `DB_PASSWORD` 若為空、為 `postgres`、長度小於 8 字元、或包含 `change_this`（不分大小寫），系統拒絕啟動。
+**啟動護欄規則**：
+- `JWT_SECRET` 含有 `please_generate`、`change_this` 等字樣 → 拒絕啟動
+- `DB_PASSWORD` 為空、`postgres`、長度 < 8 或含 `change_this` → 拒絕啟動
 
 ### 2. 配置 SSL 憑證
 
-請參閱下方 [Cloudflare SSL / TLS 設定與憑證配置](#cloudflare-ssl--tls-設定與憑證配置)，將申請的憑證放置於專案根目錄的 `ssl/` 資料夾：
-- `ssl/fullchain.pem`
-- `ssl/privkey.pem`
+請參考 [Cloudflare SSL / TLS 設定](#cloudflare-ssl--tls-設定) 取得憑證後，放置至：
 
-並確保私鑰檔案權限為 `600`：
+```
+ssl/
+├── fullchain.pem   (Origin Certificate)
+└── privkey.pem     (Private Key, 權限應為 600)
+```
+
 ```bash
 chmod 600 ssl/privkey.pem
 chmod 644 ssl/fullchain.pem
 ```
 
-### 3. 一鍵啟動生產環境
+### 3. 啟動生產環境
 
-使用 **Podman**：
 ```bash
+# Podman
 podman compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .env up -d
-```
-或使用 **Docker**：
-```bash
+
+# 或 Docker
 docker compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .env up -d
 ```
 
-### 4. Rootless Podman 特權連接埠注意事項
+### 4. Rootless Podman 特權連接埠處理
 
-在以非特權（Rootless）模式執行 Podman 時，Linux 核心預設限制只有 root 能監聽 1024 以下之特權連接埠（`net.ipv4.ip_unprivileged_port_start=1024`）。因此直接啟動生產環境綁定 `80:80` 與 `443:443` 時，可能遭遇 `rootlessport cannot expose privileged port 80` 錯誤。
+Rootless Podman 預設無法監聽 80 / 443 特權埠。請擇一解決：
 
-請依需求選擇以下任一解決方案：
+**方法 A（推薦）：調整核心參數（重開機仍生效）**
 
-- **做法 A（推薦）：允許非特權使用者綁定 80 以上連接埠（重開機依然生效）**
-  ```bash
-  echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/99-unprivileged-ports.conf
-  sudo sysctl --system
-  ```
-- **做法 B：改以 Rootful Podman 執行**
-  ```bash
-  sudo podman compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .env up -d
-  ```
-  > **注意**：若採用做法 B，請確認 `.env` 與 `ssl/` 檔案路徑與權限對 root 具備可讀權限。
+```bash
+echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/99-unprivileged-ports.conf
+sudo sysctl --system
+```
 
-### 5. 正式環境初始管理員引導 (Bootstrap Admin)
+**方法 B：改用 Rootful Podman**
 
-在全新無使用者的生產資料庫中：
-1. 在 `.env` 中設定 `BOOTSTRAP_ADMIN_USERNAME` 與 `BOOTSTRAP_ADMIN_PASSWORD`。
-2. 啟動後端容器。後端偵測到 `users` 筆數為 0 且設定了上述變數時，會自動建立初始管理員帳號，並在日誌記錄：
-   ```text
+```bash
+sudo podman compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .env up -d
+```
+
+### 5. Bootstrap 管理員引導
+
+全新空資料庫首次啟動流程：
+
+1. 在 `.env` 設定 `BOOTSTRAP_ADMIN_USERNAME` 與 `BOOTSTRAP_ADMIN_PASSWORD`
+2. 啟動後端，日誌將顯示：
+   ```
    已成功建立初始管理員帳號: <帳號名稱>
    ```
-3. 若 `users` 資料表為空且**未設定**上述變數，後端會輸出警告提示：
-   ```text
-   系統目前沒有任何使用者；請設定 BOOTSTRAP_ADMIN_USERNAME 與 BOOTSTRAP_ADMIN_PASSWORD 後重啟
-   ```
-4. **安全建議**：首次登入後，請立即至後台修改密碼，並從 `.env` 中移除 `BOOTSTRAP_ADMIN_USERNAME` 與 `BOOTSTRAP_ADMIN_PASSWORD`。
+3. 登入後立即修改密碼，並從 `.env` 移除上述兩個變數
+
+> 若資料表為空且未設定上述變數，後端會輸出警告提示但不阻斷啟動。
 
 ---
 
-## Cloudflare SSL / TLS 設定與憑證配置
-
-當您擁有自訂網域名稱並使用 Cloudflare 作為 CDN / DNS Proxy 時，請依照以下步驟設定 SSL/TLS：
+## Cloudflare SSL / TLS 設定
 
 ### 1. Cloudflare 後台設定
 
-1. **DNS 記錄**：
-   - 將您的網域名稱（例如 `gets.yourdomain.com`）指向伺服器公網 IP。
-   - **Proxy status** 務必切換為 **Proxied (橘色雲朵)**。
-2. **SSL/TLS 加密模式**：
-   - 進入 Cloudflare 控制台 -> **SSL/TLS** -> **Overview**。
-   - 加密模式選擇 **Full (strict)**（確保 Cloudflare 到 Nginx 源站之間全程採用受信任憑證加密）。
-3. **申請 Cloudflare Origin CA 憑證**：
-   - 進入 **SSL/TLS** -> **Origin Server** -> 點擊 **Create Certificate**。
-   - 憑證有效期限可選擇長達 15 年。
-   - 將生成的 **Origin Certificate** 與 **Private Key** 複製。
+1. **DNS 記錄**：將網域指向伺服器 IP，Proxy status 設為 **Proxied（橘色雲朵）**
+2. **SSL/TLS 加密模式**：選擇 **Full (strict)**（確保全程加密）
+3. **申請 Origin CA 憑證**：SSL/TLS → Origin Server → Create Certificate（有效期最長 15 年）
 
-### 2. 憑證放置位置與權限設置
-
-在專案根目錄建立 `ssl` 資料夾並存入金鑰：
+### 2. 放置憑證
 
 ```bash
 mkdir -p ssl
 
-# 將 Origin Certificate 存為 fullchain.pem
+# 貼入 Origin Certificate
 cat << 'EOF' > ssl/fullchain.pem
 -----BEGIN CERTIFICATE-----
-... (貼上 Cloudflare Origin Certificate) ...
+... (Cloudflare Origin Certificate) ...
 -----END CERTIFICATE-----
 EOF
 
-# 將 Private Key 存為 privkey.pem
+# 貼入 Private Key
 cat << 'EOF' > ssl/privkey.pem
 -----BEGIN PRIVATE KEY-----
-... (貼上 Cloudflare Private Key) ...
+... (Cloudflare Private Key) ...
 -----END PRIVATE KEY-----
 EOF
 
-# 設置嚴格檔案存取權限 (僅擁有者可讀寫私鑰)
 chmod 600 ssl/privkey.pem
 chmod 644 ssl/fullchain.pem
 ```
 
-### 3. Nginx Real IP 機制說明
+### 3. Nginx Real IP 機制
 
-當透過 Cloudflare 代理時，若未設定 Real IP，Nginx 記錄與限流看到的連線來源將全數為 Cloudflare 節點 IP。
-本專案之 `nginx.prod.conf` 內建 Cloudflare 官方 IPv4 / IPv6 網段設定並解析 `CF-Connecting-IP` 標頭還原客戶端真實 IP。
-> **備註**：Cloudflare IP 清單可能隨官方維護有所異動，建議營運維護時定期比對 [Cloudflare IP Ranges](https://www.cloudflare.com/ips/)。
+透過 Cloudflare 代理時，若未設定 Real IP，Nginx 看到的來源 IP 全為 Cloudflare 節點 IP，導致速率限制失效。
+
+本專案 `nginx.prod.conf` 已內建 Cloudflare 官方 IPv4 / IPv6 網段，並解析 `CF-Connecting-IP` 標頭還原真實客戶端 IP。
+
+> 建議定期比對 [Cloudflare IP Ranges](https://www.cloudflare.com/ips/) 確認清單仍為最新。
 
 ---
 
-## 執行整合測試 (Integration Tests)
+## 執行整合測試
 
-系統提供專屬的隔離測試資料庫配置，確保測試執行不影響開發與生產環境資料：
+系統提供獨立隔離的測試資料庫，確保測試不影響開發與生產環境：
 
 ```bash
-# 1. 啟動隔離測試資料庫 (埠 55432, 僅載入 init.sql, 無種子資料)
+# 1. 啟動隔離測試資料庫（埠 55432，無種子資料）
 podman compose -f docker-compose.test.yaml up -d db-test
 
-# 2. 執行後端整合測試
+# 2. 執行整合測試
 cd backend
 DB_HOST=127.0.0.1 DB_PORT=55432 DB_USER=postgres DB_PASSWORD=postgres \
 DB_NAME=gets_test JWT_SECRET=integration_test_jwt_secret_32_chars_minimum_value \
 REQUIRE_DB_TESTS=1 go test ./... -v -count=1
 
-# 3. 測試完畢後銷毀測試資料庫
+# 3. 銷毀測試資料庫
 cd ..
 podman compose -f docker-compose.test.yaml down -v
 ```
 
-> **安全隔離保證**：
-> - 整合測試連線池內建安全防呆，若 `DB_NAME` 不以 `_test` 結尾，測試將直接拒絕執行，防止誤連開發或生產庫。
-> - 所有需要使用者權限的測試皆透過臨時帳號 (`itest_<role>_<nano>`) 動態建立，並於測試結束時透過 `t.Cleanup` 徹底清理，絕不篡改任何既有帳號。
+**安全隔離保證**：
+- `DB_NAME` 不以 `_test` 結尾時，測試直接拒絕執行，防止誤連開發或生產庫
+- 所有需要使用者權限的測試皆建立臨時帳號（`itest_<role>_<nano>`），並於測試結束時透過 `t.Cleanup` 自動清理
 
 ---
 
-## 版本升級指南 (從 Beta-1.2 升級)
-
-若您目前運行既有的 beta-1.2 資料庫，升級至新版時需遵循以下步驟進行資料備份、資料搬遷與結構遷移：
+## 版本升級指南（從 Beta-1.2 升級）
 
 ### 1. 備份舊版資料庫
 
-在舊環境執行 PostgreSQL 二進位備份：
 ```bash
-# 請替換 $OLD_CONTAINER, $OLD_USER, $OLD_DB 為舊環境實際值
 podman exec -t $OLD_CONTAINER pg_dump -U "$OLD_USER" -d "$OLD_DB" -Fc -f /tmp/backup_beta_1_2.dump
 podman cp $OLD_CONTAINER:/tmp/backup_beta_1_2.dump ./backup_beta_1_2.dump
 ```
 
-### 2. 線上 Schema 比對 (待人工比對)
+### 2. Schema 比對（建議）
 
-若從舊版升級，建議先將線上 Schema 匯出：
 ```bash
 podman exec -t $OLD_CONTAINER pg_dump -U "$OLD_USER" -d "$OLD_DB" -s > online_schema.sql
+# 比對 online_schema.sql 與 db/init.sql，確認自訂欄位差異
 ```
-比對 `online_schema.sql` 與 `db/init.sql`，確認自訂欄位或差異處。
 
-### 3. 資料搬遷 (Bind mount 至 Named Volume)
+### 3. 資料搬遷
 
-舊版本若使用本機目錄掛載 (`./postgres_data`)，新版 compose 已全面改用 Named Volume (`postgres_data`)。建議搬遷流程：
-1. 啟動新版生產環境容器（不掛載 seed 資料）。
-2. 執行資料還原（分兩步驟：先移除升級時本來就是空的 `refresh_tokens` 避免外鍵約束擋住 `users` 的 DROP，再以容器環境變數執行還原）：
-   ```bash
-   # 3-1 移除升級時本來就是空的 refresh_tokens（避免外鍵擋住 users 的 DROP）
-   podman compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DROP TABLE IF EXISTS refresh_tokens"'
-
-   # 3-2 還原備份資料
-   podman compose exec -T db sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < backup_beta_1_2.dump
-   ```
-   > **說明**：由於全新資料庫已由 `init.sql` 預先建好資料表結構，`pg_restore --clean` 會先執行 DROP 表；若未先移除 `refresh_tokens`，其外鍵約束會阻擋 `DROP TABLE users` 導致還原報錯。`refresh_tokens` 在步驟 4 的 `001_upgrade_from_beta_1_2.sql` 會自動重新建立。
-
-### 4. 依序執行結構遷移腳本
-
-在資料庫容器內使用環境變數執行遷移：
+舊版若使用本機目錄掛載（`./postgres_data`），新版已改用 Named Volume（`postgres_data`）：
 
 ```bash
-# 執行 001 遷移 (軟刪除欄位、保養週期校正、狀態約束)
-podman compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/migrations/001_upgrade_from_beta_1_2.sql
+# 3-1 移除外鍵約束阻礙（避免 pg_restore 時 DROP TABLE users 失敗）
+podman compose exec -T db sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DROP TABLE IF EXISTS refresh_tokens"'
 
-# 執行 002 遷移 (資產編號部分唯一索引)
-podman compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/migrations/002_asset_code_partial_unique.sql
+# 3-2 還原備份資料
+podman compose exec -T db sh -c \
+  'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < backup_beta_1_2.dump
 ```
 
-> **遷移異動說明**：
-> - `001_upgrade_from_beta_1_2.sql`：新增 `retired_at` 軟刪除欄位；若既有資料存在 `maint_interval < 1` 的非法值，將自動校正為 30 天並發出 `RAISE NOTICE` 提示；補齊 `refresh_tokens` 與狀態約束。
-> - `002_asset_code_partial_unique.sql`：移除 `asset_code` 的全表唯一約束，改為條件式部分索引 (`WHERE retired_at IS NULL`)，使退役設備保留記錄同時釋出資產編號供新品重用。
-> - **約束命名差異註記**：全新安裝 (`init.sql`) 之約束名稱為 PostgreSQL 自動命名（如 `equipments_status_check`）；而經由 migration 升級之資料庫為 `chk_*`。後續遷移皆透過系統目錄動態查詢定義，不依賴固定約束名稱。
+### 4. 執行 Schema 遷移
+
+```bash
+# 001：軟刪除欄位、保養週期校正、狀態約束
+podman compose exec -T db sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < db/migrations/001_upgrade_from_beta_1_2.sql
+
+# 002：資產編號部分唯一索引
+podman compose exec -T db sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < db/migrations/002_asset_code_partial_unique.sql
+```
+
+**遷移異動說明**：
+
+| Migration | 說明 |
+|-----------|------|
+| `001_upgrade_from_beta_1_2.sql` | 新增 `retired_at` 軟刪除欄位；自動校正 `maint_interval < 1` 的非法值為 30 天；補齊 `refresh_tokens` 與狀態約束 |
+| `002_asset_code_partial_unique.sql` | 移除 `asset_code` 全表唯一約束，改為條件式部分索引（`WHERE retired_at IS NULL`），退役設備保留記錄同時釋出資產編號 |
+
+> **約束命名差異**：全新安裝（`init.sql`）的約束由 PostgreSQL 自動命名（如 `equipments_status_check`）；經由 migration 升級的資料庫為 `chk_*`。後續遷移透過系統目錄動態查詢定義，不依賴固定約束名稱。
 
 ### 5. 升級驗證清單
 
-- [ ] 能以既有管理員或 bootstrap 管理員成功登入。
-- [ ] 設備清單筆數、維修紀錄筆數與備份一致。
-- [ ] 退役設備能正常保留於維修紀錄中。
+- [ ] 能以既有管理員或 bootstrap 管理員帳號成功登入
+- [ ] 設備清單筆數、維修記錄筆數與備份一致
+- [ ] 退役設備能正常保留於維修記錄中
 
 ---
 
 ## 安全性功能架構
 
-本系統實作了業界標準之防禦與交易完整性機制：
-
-1. **Bcrypt 72-Byte 邊界截斷防護**：
-   - 由於標準 Bcrypt 僅處理前 72 位元組，系統於使用者密碼輸入時進行嚴格的 UTF-8 位元組長度校驗 (`len([]byte(password)) <= 72`)，避免過長密碼被無預警截斷。
-2. **原子化 Refresh Token Rotation 與並行競態保護**：
-   - Refresh Token 採用單次使用即作廢機制 (Rotate-on-use)。
-   - 在單一資料庫交易內以單句 `UPDATE ... RowsAffected()` 原子性撤銷舊 Token 並寫入新 Token，若中途失敗則完整 Rollback，舊 Token 不會無故失效。
-   - 針對多分頁 (Multi-tab) 同步發起 Token 刷新情境，提供 10 秒安全寬限期 (Grace Period)；超過寬限期再次重用舊 Token 則觸發 Token Reuse 警示，撤銷該使用者所有未撤銷之 Token。
-3. **撤銷驗證機制 (Fail-Closed)**：
-   - 在 Refresh Token 驗證流程中，若資料庫連線中斷或查無記錄，系統一律採取拒絕原則 (Fail-closed)。
-4. **最後管理員鎖定保護**：
-   - 在使用者角色變更或刪除交易中，使用 `SELECT lid FROM users WHERE role = 'admin' FOR UPDATE` 鎖定管理員記錄並在程式中計數，杜絕並行操作下出現「系統中無任何管理員」的狀態。
-5. **密碼變更全設備強制登出**：
-   - 密碼修改與現有 Refresh Token 撤銷綁定於同一個資料庫交易中，密碼一經變更即刻作廢該帳號所有已發放之 Refresh Token。
-6. **設備關聯軟刪除 (Soft Delete)**：
-   - 存在維修保養記錄的設備於刪除時採用 `retired_at = NOW()` 軟刪除，維護報表歷史資料完整性；無歷史記錄的設備則直接硬刪除。
+| 機制 | 說明 |
+|------|------|
+| **Bcrypt 72-Byte 邊界防護** | 密碼輸入時嚴格校驗 UTF-8 位元組長度（`len([]byte(password)) <= 72`），避免超長密碼被無預警截斷 |
+| **原子化 Refresh Token Rotation** | Rotate-on-use；單一交易內原子撤銷舊 Token 並寫入新 Token，中途失敗完整 Rollback |
+| **Multi-Tab 並行競態保護** | 10 秒安全寬限期允許多分頁同步刷新；超過寬限期再次重用舊 Token 則觸發全帳號 Token 撤銷 |
+| **Fail-Closed 撤銷驗證** | Refresh Token 驗證流程中，資料庫連線中斷或查無記錄一律採拒絕原則 |
+| **最後管理員鎖定保護** | 角色變更或刪除交易中使用 `SELECT ... FOR UPDATE` 防止並行操作導致系統無管理員 |
+| **密碼變更全設備登出** | 密碼修改與 Refresh Token 撤銷綁定於同一交易，密碼一改即刻作廢所有已發放 Token |
+| **設備關聯軟刪除** | 有維修記錄的設備以 `retired_at = NOW()` 軟刪除，保護報表歷史資料完整性 |
 
 ---
 
 ## 已知限制與未來展望
 
-- **Access Token 延遲生效視窗**：Access Token 為無狀態 JWT，效期為 15 分鐘。使用者變更密碼或登出後，已發出的 Access Token 在其 15 分鐘效期結束前仍可通過單純的 JWT 簽名驗證，直到需要使用 Refresh Token 時才會被伺服端徹底阻斷。
-- **Token 儲存機制**：目前 Access Token 與 Refresh Token 存放於前端記憶體及 LocalStorage。未來版本可評估導入 SameSite=Strict / Secure HttpOnly Cookies 機制，進一步提升防禦層級。
-- **帳號連續登入失敗鎖定**：目前未實作針對單一帳號連續密碼錯誤的臨時鎖定機制，建議搭配 Nginx 速率限制（已於生產環境配置）降低暴力破解風險。
-- **雙因子認證 (2FA / TOTP)**：管理員帳號目前僅支援密碼驗證，未來規劃支援 TOTP 雙層安全認證。
-- **自動化備份**：生產環境建議搭配 cron 定期執行 `pg_dump` 異地備份。
+| 項目 | 說明 |
+|------|------|
+| **Access Token 延遲生效視窗** | JWT Access Token 效期 15 分鐘，密碼變更或登出後已發出的 Token 在效期內仍可通過簽名驗證，直到 Refresh 時才被阻斷 |
+| **Token 儲存機制** | 目前存放於前端記憶體與 LocalStorage；未來可評估導入 SameSite=Strict / Secure HttpOnly Cookie |
+| **帳號暴力破解防護** | 未實作單帳號連續錯誤鎖定；建議搭配已配置的 Nginx 速率限制降低風險 |
+| **雙因子認證 (2FA / TOTP)** | 規劃中，管理員帳號目前僅支援密碼驗證 |
+| **自動化備份** | 建議生產環境搭配 cron 定期執行 `pg_dump` 異地備份 |
