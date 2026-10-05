@@ -8,8 +8,8 @@ services:
       - "80:80"
       - "443:443"
     volumes: !override
-      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro
+      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro,Z
+      - ./ssl:/etc/nginx/ssl:ro,Z
 
   backend:
     environment:
@@ -22,4 +22,4 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:?請在 .env 設定 DB_PASSWORD}
     volumes: !override
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro,Z

@@ -45,6 +45,13 @@ func TestInitJWT(t *testing.T) {
 		t.Fatal("Expected error for placeholder secret in production, got nil")
 	}
 
+	// Test placeholder secret with APP_ENV=prod (must also be rejected)
+	_ = os.Setenv("APP_ENV", "prod")
+	_ = os.Setenv("JWT_SECRET", placeholder)
+	if err := InitJWT(); err == nil {
+		t.Fatal("Expected error for placeholder secret with APP_ENV=prod, got nil")
+	}
+
 	// Test secure custom secret in production (must succeed)
 	_ = os.Setenv("APP_ENV", "production")
 	_ = os.Setenv("JWT_SECRET", "super_secure_random_production_secret_key_123456789")

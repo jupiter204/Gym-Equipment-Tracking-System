@@ -2,13 +2,35 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"time"
+
+	"backend/internal/config"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ValidateDBPassword validates the password strength for database connection in production.
+// It returns an error if the password is empty, "postgres", less than 8 characters, or contains "change_this" (case-insensitive).
+func ValidateDBPassword(pass string) error {
+	if pass == "" {
+		return errors.New("DB_PASSWORD 不得為空")
+	}
+	if pass == "postgres" {
+		return errors.New("DB_PASSWORD 不得為預設值 (postgres)")
+	}
+	if len(pass) < 8 {
+		return errors.New("DB_PASSWORD 長度不得少於 8 字元")
+	}
+	if strings.Contains(strings.ToLower(pass), "change_this") {
+		return errors.New("DB_PASSWORD 不得包含範例或佔位字樣 (change_this)")
+	}
+	return nil
+}
 
 // InitDB initializes the PostgreSQL connection pool using environment variables.
 func InitDB() *pgxpool.Pool {
@@ -19,9 +41,9 @@ func InitDB() *pgxpool.Pool {
 	dbPort := os.Getenv("DB_PORT")
 	sslMode := os.Getenv("DB_SSLMODE")
 
-	if os.Getenv("APP_ENV") == "production" {
-		if dbPass == "" || dbPass == "postgres" || len(dbPass) < 8 {
-			slog.Error("生產環境護欄阻擋：DB_PASSWORD 不得為空、預設值 (postgres) 或少於 8 字元")
+	if config.IsProduction() {
+		if err := ValidateDBPassword(dbPass); err != nil {
+			slog.Error("生產環境護欄阻擋：" + err.Error())
 			os.Exit(1)
 		}
 	}

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"backend/internal/config"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -21,8 +23,7 @@ func InitJWT() error {
 		return errors.New("JWT_SECRET 未設定或長度不足 32 字元")
 	}
 
-	appEnv := strings.ToLower(os.Getenv("APP_ENV"))
-	if appEnv == "production" || appEnv == "prod" {
+	if config.IsProduction() {
 		lowerSecret := strings.ToLower(secret)
 		if strings.Contains(lowerSecret, "please_generate") ||
 			strings.Contains(lowerSecret, "change_this") ||

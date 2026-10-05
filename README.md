@@ -23,7 +23,7 @@ GETS 是一套專為健身房、運動中心設計的設備管理與預防性維
 - **後端 (Backend)**: Go (Golang 1.25+) RESTful API + Gin + JWT (HS256) + Swagger (swag)
 - **資料庫 (Database)**: PostgreSQL 15/16 (含 UUID 支援、交易鎖定機制、部分索引)
 - **反向代理 (Reverse Proxy)**: Nginx (支援 Rate Limiting、Cloudflare Real IP、SSL/TLS 終結)
-- **容器化 (Containerization)**: 支援 Podman (搭配 docker-compose provider) / Docker (Docker Compose ≥ 2.24.4)
+- **容器化 (Containerization)**: 支援 Docker (Docker Compose ≥ 2.24.4) / Podman (需 docker-compose ≥ 2.24.4 或 podman-compose ≥ 1.4.0)
 
 ---
 
@@ -76,7 +76,13 @@ bash scripts/smoke_dev.sh
 - **TLS/SSL 加密**：自動導向 HTTPS (443 埠)，阻擋未加密 HTTP 流量並注入 HSTS 安全標頭。
 - **介面封閉**：在生產環境 Nginx 中將 `/swagger/*` 遮蔽為 404 Not Found。
 
-> **版本要求**：`docker-compose.prod.yaml` 使用 `!override` 語法，需使用 **Docker Compose ≥ 2.24.4**。若使用 Podman，請確保使用相容的 compose provider（例如透過 `/usr/lib/docker/cli-plugins/docker-compose`）。
+> **版本要求與 Compose Provider**：
+> - `docker-compose.prod.yaml` 使用 `!override` 語法，最低版本需求為 **Docker Compose ≥ 2.24.4** 或 **podman-compose ≥ 1.4.0**。
+> - 檢查目前版本：執行 `podman compose version`（會顯示實際使用的 compose provider 與版本；其執行檔路徑依 Linux 發行版而異）。
+> - **常見錯誤排除**：若在解析 production 設定時出現 `could not determine a constructor for the tag '!override'`，代表目前的 compose provider 版本過舊（例如某些發行版 apt 套件庫中舊版的 podman-compose 1.0.6），請升級 provider（例如透過 `pip install --user -U podman-compose` 或安裝最新版 `docker-compose-plugin`）。
+>
+> **SELinux 主機注意事項**：
+> - 在啟用 SELinux Enforcing 模式的主機（如 Fedora、RHEL、Rocky Linux 等，可由 `getenforce` 確認）上，容器存取 bind mount 檔案若無正確標籤會遭遇 `Permission denied`。本專案之 compose 設定檔已標註 `:ro,Z` 標籤以自動配置私有容器安全標籤（`:Z` 會重新標記宿主檔案屬性，請勿對家目錄等全域目錄使用；在非 SELinux 環境下會被安全忽略）。
 
 ### 1. 準備生產環境變數檔案 (`.env`)
 
@@ -87,7 +93,7 @@ bash scripts/smoke_dev.sh
 # 可執行 openssl rand -hex 32 產生
 JWT_SECRET=<請執行：openssl rand -hex 32>
 
-# PostgreSQL 資料庫密碼 (至少 8 字元，不可為 postgres 或預設弱密碼)
+# PostgreSQL 資料庫密碼 (至少 8 字元，不可為 postgres 或包含 change_this)
 DB_PASSWORD=<請輸入高強度資料庫密碼>
 
 # 自訂網域名稱 (僅供參考與記錄，Nginx 生產設定使用 server_name _)
@@ -99,8 +105,8 @@ BOOTSTRAP_ADMIN_PASSWORD=<至少 8 字元、至多 72 位元組的強密碼>
 ```
 
 > **生產環境安全護欄**：
-> - `APP_ENV=production` 下，若 `JWT_SECRET` 包含 `please_generate`、`change_this` 或 repo 歷史範例金鑰，系統拒絕啟動。
-> - `DB_PASSWORD` 若為空、為 `postgres`、包含 `change_this` 或長度小於 8 字元，系統拒絕啟動。
+> - `APP_ENV=production` 或 `APP_ENV=prod` 下，若 `JWT_SECRET` 包含 `please_generate`、`change_this` 或 repo 歷史範例金鑰，系統拒絕啟動。
+> - `DB_PASSWORD` 若為空、為 `postgres`、長度小於 8 字元、或包含 `change_this`（不分大小寫），系統拒絕啟動。
 
 ### 2. 配置 SSL 憑證
 
@@ -125,7 +131,24 @@ podman compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .en
 docker compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .env up -d
 ```
 
-### 4. 正式環境初始管理員引導 (Bootstrap Admin)
+### 4. Rootless Podman 特權連接埠注意事項
+
+在以非特權（Rootless）模式執行 Podman 時，Linux 核心預設限制只有 root 能監聽 1024 以下之特權連接埠（`net.ipv4.ip_unprivileged_port_start=1024`）。因此直接啟動生產環境綁定 `80:80` 與 `443:443` 時，可能遭遇 `rootlessport cannot expose privileged port 80` 錯誤。
+
+請依需求選擇以下任一解決方案：
+
+- **做法 A（推薦）：允許非特權使用者綁定 80 以上連接埠（重開機依然生效）**
+  ```bash
+  echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/99-unprivileged-ports.conf
+  sudo sysctl --system
+  ```
+- **做法 B：改以 Rootful Podman 執行**
+  ```bash
+  sudo podman compose -f docker-compose.yaml -f docker-compose.prod.yaml --env-file .env up -d
+  ```
+  > **注意**：若採用做法 B，請確認 `.env` 與 `ssl/` 檔案路徑與權限對 root 具備可讀權限。
+
+### 5. 正式環境初始管理員引導 (Bootstrap Admin)
 
 在全新無使用者的生產資料庫中：
 1. 在 `.env` 中設定 `BOOTSTRAP_ADMIN_USERNAME` 與 `BOOTSTRAP_ADMIN_PASSWORD`。
@@ -242,10 +265,15 @@ podman exec -t $OLD_CONTAINER pg_dump -U "$OLD_USER" -d "$OLD_DB" -s > online_sc
 
 舊版本若使用本機目錄掛載 (`./postgres_data`)，新版 compose 已全面改用 Named Volume (`postgres_data`)。建議搬遷流程：
 1. 啟動新版生產環境容器（不掛載 seed 資料）。
-2. 將備份檔還原至新資料庫：
+2. 執行資料還原（分兩步驟：先移除升級時本來就是空的 `refresh_tokens` 避免外鍵約束擋住 `users` 的 DROP，再以容器環境變數執行還原）：
    ```bash
-   podman compose exec -T db pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" < backup_beta_1_2.dump
+   # 3-1 移除升級時本來就是空的 refresh_tokens（避免外鍵擋住 users 的 DROP）
+   podman compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DROP TABLE IF EXISTS refresh_tokens"'
+
+   # 3-2 還原備份資料
+   podman compose exec -T db sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < backup_beta_1_2.dump
    ```
+   > **說明**：由於全新資料庫已由 `init.sql` 預先建好資料表結構，`pg_restore --clean` 會先執行 DROP 表；若未先移除 `refresh_tokens`，其外鍵約束會阻擋 `DROP TABLE users` 導致還原報錯。`refresh_tokens` 在步驟 4 的 `001_upgrade_from_beta_1_2.sql` 會自動重新建立。
 
 ### 4. 依序執行結構遷移腳本
 
