@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM docker.io/library/golang:1.26.2-alpine3.22 AS builder
+FROM docker.io/library/golang:1.27.1-alpine3.24 AS builder
 WORKDIR /app
 
 # Cache dependencies
@@ -11,7 +11,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o main .
 
 # Stage 2: Final Image
-FROM docker.io/library/alpine:3.22.4
+FROM docker.io/library/alpine:3.24
 RUN apk --no-cache add ca-certificates tzdata \
     && addgroup -S appgroup && adduser -S appuser -G appgroup
 

@@ -13,6 +13,7 @@ GETS 是一套專為**健身房、運動中心**設計的全端設備管理系�
 - [生產環境部署指南](#生產環境部署指南)
 - [Cloudflare SSL / TLS 設定](#cloudflare-ssl--tls-設定)
 - [執行整合測試](#執行整合測試)
+- [PostgreSQL 15 → 18 升級指南](#postgresql-15--18-升級指南)
 - [版本升級指南（從 Beta-1.2 升級）](#版本升級指南從-beta-12-升級)
 - [安全性功能架構](#安全性功能架構)
 - [已知限制與未來展望](#已知限制與未來展望)
@@ -40,7 +41,7 @@ GETS 是一套專為**健身房、運動中心**設計的全端設備管理系�
                                         │
                                 ┌───────▼────────┐
                                 │   PostgreSQL   │
-                                │    15 / 16     │
+                                │       18       │
                                 └────────────────┘
 ```
 
@@ -49,10 +50,12 @@ GETS 是一套專為**健身房、運動中心**設計的全端設備管理系�
 | 層級 | 技術 |
 |------|------|
 | **前端** | React 19 · TypeScript · Vite 8 · Tailwind CSS 4 · Recharts · Lucide Icons · PWA |
-| **後端** | Go 1.25 · Gin · JWT (HS256) · pgx/v5 · Swagger (swag) · cron/v3 |
-| **資料庫** | PostgreSQL 15/16（UUID · 交易鎖定 · 部分索引） |
+| **後端** | Go 1.27+ · Gin · JWT (HS256) · pgx/v5 · Swagger (swag) · cron/v3 |
+| **資料庫** | PostgreSQL 18（映像 postgres:18.6-alpine3.24 · UUID · 交易鎖定 · 部分索引） |
 | **反向代理** | Nginx（Rate Limiting · Cloudflare Real IP · TLS 終結） |
 | **容器化** | Docker Compose ≥ 2.24.4 / Podman Compose ≥ 1.4.0 |
+
+> **已驗證版本**：Go 1.27.1、PostgreSQL 18.6
 
 ---
 
@@ -292,7 +295,71 @@ podman compose -f docker-compose.test.yaml down -v
 
 ---
 
+## PostgreSQL 15 → 18 升級指南
+
+本專案自此版本起資料庫由 PostgreSQL 15 升級至 **PostgreSQL 18.6**，資料卷由 `postgres_data` 改為 `postgres18_data`，掛載路徑為 `/var/lib/postgresql`。
+
+依據部署環境與現有資料庫版本，請選擇對應的升級方式：
+
+### 情境 A：開發環境（無須保留舊資料）
+
+若本機開發環境無需保留既有資料，可直接清除舊卷並重新啟動：
+
+```bash
+# 1. 停止舊 stack 並清除舊資料卷
+podman compose down -v
+
+# 2. 啟動新 stack（自動初始化 PostgreSQL 18 與測試種子資料）
+podman compose up -d
+```
+
+> **注意**：舊具名卷 `postgres_data` 會留在系統中成為孤兒卷（Orphan Volume），若確定不再需要可手動清理：
+> ```bash
+> podman volume rm database_final_postgres_data
+> ```
+
+---
+
+### 情境 B：正式環境（目前版本為 PostgreSQL 15）
+
+適用於已處於 PostgreSQL 15 正式版本、已有營運資料（資料庫結構已包含 `refresh_tokens`）之環境。
+
+> **回滾保險**：操作過程中**切勿加上 `-v`**。舊具名卷 `postgres_data` 與備份檔案將完整保留，若升級過程遇異常可隨時切回舊版程式碼直接重啟舊 stack。
+
+```bash
+# 1. 在「舊 stack（仍是 PostgreSQL 15）」上備份
+podman compose -f docker-compose.yaml -f docker-compose.prod.yaml exec -T db sh -c \
+  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backup_pg15.dump
+
+# 2. 停止舊 stack（保留舊資料卷作為回滾保險）
+podman compose -f docker-compose.yaml -f docker-compose.prod.yaml down
+
+# 3. 切換至新版程式碼後，僅啟動新的 PostgreSQL 18 資料庫並等待健康檢查通過
+podman compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d db
+
+# 4. 還原備份資料至 PostgreSQL 18
+podman compose -f docker-compose.yaml -f docker-compose.prod.yaml exec -T db sh -c \
+  'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < backup_pg15.dump
+
+# 5. 啟動其餘服務並驗證系統
+podman compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+```
+
+- **無須額外步驟**：此備份已包含完整的資料結構與 `refresh_tokens`，因此**不需要**「先 DROP `refresh_tokens`」步驟，亦**不需要**執行 `001` 或 `002` 遷移腳本。
+- **回滾方式**：在驗證完全通過前請妥善保留 `backup_pg15.dump` 與舊卷 `postgres_data`；若需回滾，只需切換回舊版 Git commit 並使用舊版 compose 啟動舊卷即可。
+
+---
+
+### 情境 C：正式環境（仍停留在 Beta-1.2）
+
+若正式環境仍停留在更早期的 Beta-1.2 版本（尚未套用 `001` 與 `002` 遷移腳本），請直接參考下方的 [從 Beta-1.2 升級](#版本升級指南從-beta-12-升級) 流程進行升級，目標資料庫為新版的 PostgreSQL 18。
+
+---
+
 ## 版本升級指南（從 Beta-1.2 升級）
+
+> **注意**：新版 Compose 資料卷已升級為 `postgres18_data`、容器內掛載點為 `/var/lib/postgresql`。以下流程將 Beta-1.2 備份資料匯入新版 PostgreSQL 18，並補齊 Schema 遷移腳本。
 
 ### 1. 備份舊版資料庫
 
@@ -310,7 +377,7 @@ podman exec -t $OLD_CONTAINER pg_dump -U "$OLD_USER" -d "$OLD_DB" -s > online_sc
 
 ### 3. 資料搬遷
 
-舊版若使用本機目錄掛載（`./postgres_data`），新版已改用 Named Volume（`postgres_data`）：
+舊版若使用本機目錄掛載（`./postgres_data`）或舊版具名卷（`postgres_data`），新版已改用 Named Volume（`postgres18_data`，掛載於 `/var/lib/postgresql`）：
 
 ```bash
 # 3-1 移除外鍵約束阻礙（避免 pg_restore 時 DROP TABLE users 失敗）
